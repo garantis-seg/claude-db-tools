@@ -239,6 +239,7 @@ def run_http_server():
     from starlette.routing import Route
     from starlette.responses import JSONResponse
     from mcp.server.sse import SseServerTransport
+    from urllib.parse import parse_qs
 
     # Create SSE transport with the messages path
     sse = SseServerTransport("/messages/")
@@ -266,6 +267,160 @@ def run_http_server():
             "version": "1.0.0"
         })
 
+    # REST API helper functions
+    async def read_json_body(receive):
+        """Read and parse JSON body from request."""
+        body = b""
+        while True:
+            message = await receive()
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+        if body:
+            return json.loads(body.decode("utf-8"))
+        return {}
+
+    async def send_json_response(send, data, status=200):
+        """Send a JSON response."""
+        body = json.dumps(data).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                [b"content-type", b"application/json"],
+                [b"access-control-allow-origin", b"*"],
+            ],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": body,
+        })
+
+    async def handle_api_tables(scope, receive, send):
+        """GET /api/tables?schema=cnpj_raw - List tables in a schema."""
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        schema = params.get("schema", ["public"])[0]
+        try:
+            result = await list_tables(schema)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_query(scope, receive, send):
+        """POST /api/query - Execute a SELECT query."""
+        try:
+            body = await read_json_body(receive)
+            sql = body.get("sql", "")
+            limit = body.get("limit", 1000)
+            if not sql:
+                await send_json_response(send, {"error": "sql is required"}, 400)
+                return
+            result = await query(sql, limit)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_execute(scope, receive, send):
+        """POST /api/execute - Execute a write operation."""
+        try:
+            body = await read_json_body(receive)
+            sql = body.get("sql", "")
+            if not sql:
+                await send_json_response(send, {"error": "sql is required"}, 400)
+                return
+            result = await execute(sql)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_count(scope, receive, send):
+        """GET /api/count?table=schema.table&where=condition - Count rows."""
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        table = params.get("table", [None])[0]
+        where = params.get("where", [None])[0]
+        if not table:
+            await send_json_response(send, {"error": "table is required"}, 400)
+            return
+        try:
+            result = await count(table, where)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_schema(scope, receive, send):
+        """GET /api/schema?table=name&schema=cnpj_raw - Get table schema."""
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        table = params.get("table", [None])[0]
+        schema_name = params.get("schema", ["public"])[0]
+        if not table:
+            await send_json_response(send, {"error": "table is required"}, 400)
+            return
+        try:
+            result = await get_schema(table, schema_name)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_indexes(scope, receive, send):
+        """GET /api/indexes?table=name&schema=cnpj_raw - Get indexes."""
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        table = params.get("table", [None])[0]
+        schema_name = params.get("schema", ["cnpj_raw"])[0]
+        try:
+            result = await get_indexes(table, schema_name)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_stats(scope, receive, send):
+        """GET /api/stats?table=name&schema=cnpj_raw - Get table stats."""
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        table = params.get("table", [None])[0]
+        schema_name = params.get("schema", ["cnpj_raw"])[0]
+        if not table:
+            await send_json_response(send, {"error": "table is required"}, 400)
+            return
+        try:
+            result = await get_stats(table, schema_name)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_sample(scope, receive, send):
+        """GET /api/sample?table=name&schema=cnpj_raw&limit=10 - Get sample rows."""
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        table = params.get("table", [None])[0]
+        schema_name = params.get("schema", ["public"])[0]
+        limit = int(params.get("limit", [10])[0])
+        if not table:
+            await send_json_response(send, {"error": "table is required"}, 400)
+            return
+        try:
+            result = await get_sample(table, schema_name, limit)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
+    async def handle_api_explain(scope, receive, send):
+        """POST /api/explain - Explain a query."""
+        try:
+            body = await read_json_body(receive)
+            sql = body.get("sql", "")
+            analyze = body.get("analyze", True)
+            if not sql:
+                await send_json_response(send, {"error": "sql is required"}, 400)
+                return
+            result = await explain_query(sql, analyze)
+            await send_json_response(send, json.loads(result))
+        except Exception as e:
+            await send_json_response(send, {"error": str(e)}, 500)
+
     # Build a pure ASGI app that handles all routes
     async def app(scope, receive, send):
         if scope["type"] == "lifespan":
@@ -284,16 +439,36 @@ def run_http_server():
         path = scope.get("path", "")
         method = scope.get("method", "GET")
 
+        # MCP SSE routes
         if path == "/sse" and method == "GET":
             await handle_sse(scope, receive, send)
         elif path.startswith("/messages/") and method == "POST":
             await handle_messages(scope, receive, send)
+        # Health check
         elif path in ["/", "/health"] and method == "GET":
-            # Use Starlette for simple JSON responses
             from starlette.requests import Request
             request = Request(scope, receive, send)
             response = await health(request)
             await response(scope, receive, send)
+        # REST API routes
+        elif path == "/api/tables" and method == "GET":
+            await handle_api_tables(scope, receive, send)
+        elif path == "/api/query" and method == "POST":
+            await handle_api_query(scope, receive, send)
+        elif path == "/api/execute" and method == "POST":
+            await handle_api_execute(scope, receive, send)
+        elif path == "/api/count" and method == "GET":
+            await handle_api_count(scope, receive, send)
+        elif path == "/api/schema" and method == "GET":
+            await handle_api_schema(scope, receive, send)
+        elif path == "/api/indexes" and method == "GET":
+            await handle_api_indexes(scope, receive, send)
+        elif path == "/api/stats" and method == "GET":
+            await handle_api_stats(scope, receive, send)
+        elif path == "/api/sample" and method == "GET":
+            await handle_api_sample(scope, receive, send)
+        elif path == "/api/explain" and method == "POST":
+            await handle_api_explain(scope, receive, send)
         else:
             # 404 for unknown routes
             response_body = b'{"error": "Not found"}'
