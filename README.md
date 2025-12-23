@@ -4,6 +4,67 @@ MCP Server para acesso ao PostgreSQL - Ferramentas para o Claude Code interagir 
 
 ---
 
+## Para AI Agents (Claude, GPT, etc.)
+
+### Acesso Rápido via REST API
+
+Base URL: `https://claude-db-tools-34pal47ocq-uc.a.run.app`
+
+**Autenticação:** Requer token GCP Identity:
+```bash
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" URL
+```
+
+### Endpoints Disponíveis
+
+| Endpoint | Método | Descrição |
+|----------|--------|-----------|
+| `/api/tables?schema=cnpj_raw` | GET | Lista tabelas do schema |
+| `/api/query` | POST | Executa SELECT (body: `{"sql": "...", "limit": 1000}`) |
+| `/api/execute` | POST | Executa INSERT/UPDATE/DELETE (body: `{"sql": "..."}`) |
+| `/api/count?table=cnpj_raw.empresas` | GET | Conta rows (opcional: `&where=...`) |
+| `/api/schema?table=empresas&schema=cnpj_raw` | GET | Schema da tabela |
+| `/api/indexes?schema=cnpj_raw` | GET | Lista índices (opcional: `&table=...`) |
+| `/api/stats?table=empresas&schema=cnpj_raw` | GET | Estatísticas da tabela |
+| `/api/sample?table=empresas&schema=cnpj_raw&limit=10` | GET | Amostra de dados |
+| `/api/explain` | POST | EXPLAIN ANALYZE (body: `{"sql": "...", "analyze": true}`) |
+| `/health` | GET | Health check |
+
+### Exemplos de Uso (curl)
+
+```bash
+# Listar tabelas do schema cnpj_raw
+curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/tables?schema=cnpj_raw" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
+
+# Executar query
+curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/query" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM cnpj_raw.empresas LIMIT 5"}'
+
+# Contar registros
+curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/count?table=cnpj_raw.empresas" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
+
+# Ver schema de uma tabela
+curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/schema?table=empresas&schema=cnpj_raw" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
+```
+
+### Schemas Disponíveis
+
+- `cnpj_raw` - Dados brutos da Receita Federal (empresas, estabelecimentos)
+- `public` - Tabelas gerais
+
+### Banco de Dados
+
+- **Tipo:** PostgreSQL 15
+- **Instância:** Cloud SQL (GCP)
+- **Projeto:** neqsti
+
+---
+
 ## IMPORTANTE: USO EXCLUSIVO PARA DESENVOLVIMENTO
 
 Este serviço é uma **ferramenta de desenvolvimento exclusiva para Claude Code**.
@@ -27,7 +88,7 @@ Se você precisa de acesso ao banco em produção, use conexão direta via `psyc
 
 ---
 
-## Instalação
+## Instalação (MCP Protocol)
 
 ### 1. Clonar e instalar dependências
 
@@ -64,7 +125,7 @@ claude /mcp
 
 ---
 
-## Tools Disponíveis
+## MCP Tools Disponíveis
 
 | Tool | Descrição |
 |------|-----------|
@@ -81,7 +142,7 @@ claude /mcp
 
 ---
 
-## Exemplos de Uso
+## Exemplos de Uso (linguagem natural)
 
 Após configurar, você pode pedir ao Claude:
 
@@ -102,7 +163,7 @@ O Claude usará automaticamente as tools apropriadas.
 ```
 claude-db-tools/
 ├── src/
-│   ├── server.py          # Entry point MCP
+│   ├── server.py          # Entry point MCP + REST API
 │   ├── config.py          # Configurações
 │   ├── database.py        # Connection pooling
 │   └── tools/             # Tools MCP
@@ -111,6 +172,8 @@ claude-db-tools/
 │       ├── stats.py       # get_stats, explain_query
 │       └── sample.py      # get_sample
 ├── docs/                  # Documentação adicional
+├── Dockerfile
+├── cloudbuild.yaml        # Deploy para Cloud Run
 ├── requirements.txt
 └── pyproject.toml
 ```
@@ -128,6 +191,15 @@ claude-db-tools/
 | `DB_PASSWORD` | (obrigatório) | Senha |
 | `QUERY_TIMEOUT` | 300 | Timeout em segundos |
 | `MAX_ROWS` | 10000 | Máximo de rows retornadas |
+
+---
+
+## Deploy
+
+```bash
+# Deploy para Cloud Run
+gcloud builds submit --config=cloudbuild.yaml --project=neqsti
+```
 
 ---
 
