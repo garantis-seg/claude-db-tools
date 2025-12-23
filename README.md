@@ -10,9 +10,36 @@ MCP Server para acesso ao PostgreSQL - Ferramentas para o Claude Code interagir 
 
 Base URL: `https://claude-db-tools-34pal47ocq-uc.a.run.app`
 
-**Autenticação:** Requer token GCP Identity:
+### Autenticação (IMPORTANTE)
+
+O serviço requer autenticação via Google Cloud Identity Token.
+
+**Como autenticar nas requisições:**
 ```bash
 curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" URL
+```
+
+**Pré-requisito:** O usuário precisa estar logado no gcloud CLI.
+
+### Troubleshooting para AI Agents
+
+| Erro | Causa | Solução |
+|------|-------|---------|
+| `401 Unauthorized` | Token inválido ou expirado | Peça ao usuário para executar: `gcloud auth login` |
+| `403 Forbidden` | Usuário sem permissão | Usuário precisa ter acesso ao projeto `neqsti` no GCP |
+| `Connection timeout` | Proxy corporativa bloqueando | Peça ao usuário verificar configurações de proxy |
+| `Could not resolve host` | DNS/Rede | Verificar conexão com internet |
+
+**Se a autenticação falhar, instrua o usuário:**
+```bash
+# 1. Fazer login no gcloud
+gcloud auth login
+
+# 2. Verificar se está no projeto correto
+gcloud config set project neqsti
+
+# 3. Testar conexão
+curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/health"
 ```
 
 ### Endpoints Disponíveis
