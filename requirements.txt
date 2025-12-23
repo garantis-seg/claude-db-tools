@@ -1,0 +1,13 @@
+# MCP Server dependencies
+mcp[cli]>=1.0.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Configuration
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# HTTP Server (for Cloud Run deployment)
+uvicorn>=0.30.0
+starlette>=0.38.0

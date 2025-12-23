@@ -1,0 +1,73 @@
+# Cloud Build configuration for claude-db-tools
+#
+# IMPORTANTE: Este serviço é para uso EXCLUSIVO do Claude Code.
+# NÃO use em produção. NÃO crie dependências de outros serviços.
+#
+# Deploy: gcloud builds submit --config=cloudbuild.yaml --project=neqsti
+
+substitutions:
+  _VERSION: 'v3'
+  _REGION: 'us-central1'
+  _REPO: 'docker-images'
+
+steps:
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:latest'
+      - '.'
+
+  # Push to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'claude-db-tools'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--memory'
+      - '512Mi'
+      - '--cpu'
+      - '1'
+      - '--timeout'
+      - '600'
+      - '--max-instances'
+      - '2'
+      - '--min-instances'
+      - '0'
+      - '--vpc-connector'
+      - 'cloud-sql-connector'
+      - '--vpc-egress'
+      - 'private-ranges-only'
+      - '--no-allow-unauthenticated'
+      - '--set-secrets'
+      - 'DB_PASSWORD=CLOUD_SQL_PASSWORD:latest'
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '900s'
