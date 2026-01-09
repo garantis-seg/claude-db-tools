@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     Application settings loaded from environment variables.
 
     Environment variables:
-        DB_HOST: PostgreSQL host (default: 172.17.0.5)
+        DB_HOST: PostgreSQL host (default: 172.17.1.3)
         DB_PORT: PostgreSQL port (default: 5432)
         DB_NAME: Database name (default: cnpj_database)
         DB_USER: Database user (default: postgres)
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     """
 
     # Database connection
-    db_host: str = "172.17.0.5"
+    db_host: str = "172.17.1.3"
     db_port: int = 5432
     db_name: str = "cnpj_database"
     db_user: str = "postgres"

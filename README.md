@@ -82,8 +82,61 @@ curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/schema?table=empres
 
 ### Schemas Disponíveis
 
-- `cnpj_raw` - Dados brutos da Receita Federal (empresas, estabelecimentos)
-- `public` - Tabelas gerais
+| Schema | Tabelas | Descrição |
+|--------|---------|-----------|
+| `pipeline` | 7 | Dados brutos e processados do pipeline de leads (HTML, parsing, PJe) |
+| `leads` | 6 | Backlog, qualificação, AI analysis, enriquecimento |
+| `lawyers` | 12 | Advogados, emails, domínios de escritórios |
+| `app` | 8 | Metadados do app, tracking, preferências de usuário |
+| `cotacao` | 2 | Serviço de cotações de seguro |
+| `cnpj_raw` | - | Dados brutos da Receita Federal (empresas, estabelecimentos) |
+
+#### Detalhes por Schema
+
+**pipeline** (Dados do Pipeline):
+- `raw_htmls_execucao_fiscal` - HTML bruto do e-SAJ
+- `parsed_cases` - Casos parseados
+- `parsed_cases_filtered` - Casos filtrados (qualidade)
+- `pje_processos` - Processos do PJe API
+- `pje_partes` - Partes do PJe
+- `pje_advogados` - Advogados do PJe
+- `case_movements` - Movimentações processuais
+
+**leads** (Gestão de Leads):
+- `global_backlog` - Fila global de leads
+- `backlog_status_history` - Histórico de status
+- `ai_analysis_cache` - Cache de análise AI
+- `party_enrichments` - Enriquecimento de partes
+- `empresas_com_processos` - Empresas agregadas
+- `processo_lusha_leads` - Leads do Lusha
+
+**lawyers** (Advogados e Domínios):
+- `lawyers` - Registry consolidado
+- `lawyer_emails` - Emails validados
+- `lawyer_email_cache` - Cache de emails
+- `lawyer_discovery_jobs` - Jobs de descoberta
+- `lawyer_processo_status` - Status advogado-processo
+- `lawyer_processos` - Mapeamento advogado-processo
+- `email_discovery_jobs` - Jobs de email
+- `email_validation_cache` - Cache de validação
+- `domain_discovery_cache` - Cache de domínios
+- `domain_discovery_history` - Histórico de descoberta
+- `domain_feedback` - Feedback de domínios
+- `law_firm_domains` - Domínios curados
+
+**app** (Metadados da Aplicação):
+- `user_processo_status` - Status por usuário
+- `user_processo_notes` - Notas de usuário
+- `user_notifications` - Notificações
+- `notification_tracking` - Tracking de notificações
+- `service_sync_status` - Status dos serviços
+- `reanalyze_jobs` - Jobs de reanálise
+- `lawsuit_pdfs` - PDFs baixados
+- `pdf_download_stats` - Stats de download
+
+**cotacao** (Serviço de Cotações):
+- `cotacoes` - Cotações de seguro
+- `cotacao_uploads` - Uploads de documentos
 
 ### Banco de Dados
 

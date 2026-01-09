@@ -56,7 +56,7 @@ steps:
       - '--min-instances'
       - '0'
       - '--vpc-connector'
-      - 'cloud-sql-connector'
+      - 'cloud-sql-connector-sa'
       - '--vpc-egress'
       - 'private-ranges-only'
       - '--no-allow-unauthenticated'
