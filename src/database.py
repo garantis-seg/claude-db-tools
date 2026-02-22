@@ -110,11 +110,14 @@ def get_connection():
                 conn = None
                 continue
 
-            yield conn
-            return
+            # Connection acquired and validated — yield to caller.
+            # After this point, any exception from the caller's code (e.g. SQL
+            # errors like "column does not exist") must NOT be retried here.
+            # Only connection-acquisition failures above should be retried.
+            break
 
         except Exception as e:
-            logger.warning(f"Connection error (attempt {attempt + 1}): {e}")
+            logger.warning(f"Connection acquisition error (attempt {attempt + 1}): {e}")
             if conn:
                 try:
                     _connection_pool.putconn(conn, close=True)
@@ -125,9 +128,17 @@ def get_connection():
             if attempt == max_retries - 1:
                 raise
 
-        finally:
-            if conn and _connection_pool:
+    if conn is None:
+        raise RuntimeError("Failed to acquire database connection after retries")
+
+    try:
+        yield conn
+    finally:
+        if conn and _connection_pool:
+            try:
                 _connection_pool.putconn(conn)
+            except Exception:
+                pass
 
 
 def execute_query(

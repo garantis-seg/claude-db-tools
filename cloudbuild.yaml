@@ -8,7 +8,7 @@
 substitutions:
   _VERSION: 'v3'
   _REGION: 'southamerica-east1'
-  _REPO: 'docker-images'
+  _REPO: 'lead-gen-judicial'
 
 steps:
   # Build Docker image
