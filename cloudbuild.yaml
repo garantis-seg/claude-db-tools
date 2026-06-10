@@ -6,7 +6,7 @@
 # Deploy: gcloud builds submit --config=cloudbuild.yaml --project=neqsti
 
 substitutions:
-  _VERSION: 'v3'
+  _VERSION: 'v4'
   _REGION: 'southamerica-east1'
   _REPO: 'lead-gen-judicial'
 

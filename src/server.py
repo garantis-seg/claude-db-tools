@@ -57,7 +57,7 @@ async def db_query(sql: str, limit: int = 1000) -> str:
 
 
 @mcp.tool()
-async def db_execute(sql: str) -> str:
+async def db_execute(sql: str, allow_mojibake: bool = False) -> str:
     """
     Execute a write operation (INSERT, UPDATE, DELETE, CREATE, ALTER, DROP).
 
@@ -65,7 +65,9 @@ async def db_execute(sql: str) -> str:
 
     Args:
         sql: The SQL statement to execute.
-            Allowed: INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE
+            Allowed: INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE, COMMENT, DO
+        allow_mojibake: bypass the CP1252-mojibake guard (only when
+            intentionally writing mojibake characters, e.g. data repair).
 
     Returns:
         JSON string with execution result including rows affected.
@@ -74,7 +76,7 @@ async def db_execute(sql: str) -> str:
         - db_execute("INSERT INTO my_table (col1) VALUES ('value')")
         - db_execute("CREATE INDEX idx_name ON table(column)")
     """
-    return await execute(sql)
+    return await execute(sql, allow_mojibake)
 
 
 @mcp.tool()
@@ -326,10 +328,11 @@ def run_http_server():
         try:
             body = await read_json_body(receive)
             sql = body.get("sql", "")
+            allow_mojibake = bool(body.get("allow_mojibake", False))
             if not sql:
                 await send_json_response(send, {"error": "sql is required"}, 400)
                 return
-            result = await execute(sql)
+            result = await execute(sql, allow_mojibake)
             await send_json_response(send, json.loads(result))
         except Exception as e:
             await send_json_response(send, {"error": str(e)}, 500)
