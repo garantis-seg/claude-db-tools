@@ -49,12 +49,20 @@ steps:
       - '512Mi'
       - '--cpu'
       - '1'
+      # ⚠️ Estes 4 valores foram afinados IMPERATIVAMENTE no serviço vivo
+      # (`gcloud run services update`) e o yaml não sabia — drift medido
+      # 2026-07-31: yaml dizia timeout=600 / max=2 / min=0 / concurrency=default(80),
+      # o vivo estava em 110 / 5 / 1 / 8. O próximo deploy por este yaml teria
+      # REVERTIDO a afinação inteira, em silêncio. Persistido aqui pra não acontecer.
+      # `query_timeout` (src/config.py) tem que ficar ABAIXO deste `--timeout`.
       - '--timeout'
-      - '600'
+      - '110'
+      - '--concurrency'
+      - '8'
       - '--max-instances'
-      - '2'
+      - '5'
       - '--min-instances'
-      - '0'
+      - '1'
       - '--network'
       - 'default'
       - '--subnet'
