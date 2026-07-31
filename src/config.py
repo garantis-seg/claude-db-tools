@@ -29,7 +29,18 @@ class Settings(BaseSettings):
     db_password: Optional[str] = None
 
     # Query settings
-    query_timeout: int = 300  # 5 minutes
+    #
+    # ⚠️ query_timeout DEVE ficar ABAIXO do `timeoutSeconds` do Cloud Run (110s).
+    # Estava em 300s: o cliente levava 504 aos 110s e a query seguia rodando por
+    # mais ~190s, SEGURANDO o slot de concorrência (containerConcurrency=8) e a
+    # conexão do pool. Uma rajada de queries analíticas de uma sessão starvava
+    # todas as outras — medido 2026-07-31: ~30min de 504 contínuo (21:24→21:54),
+    # com `SELECT 1` estourando o timeout HTTP.
+    #
+    # Com 100s a query morre JUNTO com o request que a pediu: quem gastou o
+    # tempo é quem paga, e ninguém herda trabalho abandonado.
+    # Se subir o timeoutSeconds do Cloud Run, suba isto junto (nesta ordem).
+    query_timeout: int = 100
     max_rows: int = 10000
 
     # Connection pool
