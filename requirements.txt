@@ -1,5 +1,16 @@
 # MCP Server dependencies
-mcp[cli]>=1.0.0
+#
+# ⚠️ TETO EM <2 É LOAD-BEARING. O `mcp` 2.0.0 (2026) tirou o FastMCP de dentro do
+# pacote — `from mcp.server.fastmcp import FastMCP` (src/server.py:17) some, o
+# container morre no boot com ModuleNotFoundError e o Cloud Run reprova o startup
+# probe. Sem teto, `>=1.0.0` resolvia pra 2.x e o repo ficava IMPOSSÍVEL de
+# rebuildar: a imagem viva seguia servindo porque foi construída quando 1.x era
+# a última, mas qualquer deploy novo falhava. Descoberto 2026-07-31 tentando
+# shipar o fix de statement_timeout — o deploy quebrou por isto, não por ele.
+#
+# Pra subir pra 2.x: `src/server.py` tem que migrar pro pacote `fastmcp`
+# separado (imports das linhas 17 e 243). Não é bump de pin, é port.
+mcp[cli]>=1.0.0,<2
 
 # Database
 psycopg2-binary>=2.9.9
