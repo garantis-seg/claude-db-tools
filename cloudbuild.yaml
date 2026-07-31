@@ -21,6 +21,23 @@ steps:
       - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:latest'
       - '.'
 
+  # Gate FAIL-CLOSED: a imagem recem-buildada consegue importar o que o server
+  # precisa? Sem isto, resolucao de dependencia quebrada so aparece no DEPLOY —
+  # foi o que aconteceu em 2026-07-31: `mcp[cli]>=1.0.0` (sem teto) resolveu pra
+  # 2.0.0, que tirou o FastMCP de dentro do pacote, e o container morreu no
+  # startup probe DEPOIS de ja ter buildado e pushado. Vermelho aqui = nada
+  # deploya e a revisao anterior segue servindo.
+  - name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
+    id: 'smoke-imports'
+    entrypoint: python
+    args:
+      - '-c'
+      - |
+        from mcp.server.fastmcp import FastMCP
+        from mcp.server.sse import SseServerTransport
+        import mcp, psycopg2, uvicorn, starlette
+        print(f"smoke OK - mcp {mcp.__version__ if hasattr(mcp,'__version__') else '?'}")
+
   # Push to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args:
