@@ -39,6 +39,20 @@ def test_statement_timeout_morre_antes_do_request_http():
     )
 
 
+def test_dockerfile_nao_sobrepoe_query_timeout():
+    """ENV QUERY_TIMEOUT no Dockerfile GANHA do default do config.py.
+
+    Ela valia 300 e tornava qualquer mudanca no config.py um NO-OP silencioso —
+    o statement_timeout seguia 300s, acima do timeout HTTP. Fonte unica = config.py.
+    """
+    txt = (_RAIZ / "Dockerfile").read_text(encoding="utf-8")
+    ativo = [
+        l for l in txt.splitlines()
+        if "QUERY_TIMEOUT=" in l and not l.lstrip().startswith("#")
+    ]
+    assert not ativo, f"QUERY_TIMEOUT voltou pro Dockerfile e anula o config.py: {ativo}"
+
+
 def test_concurrency_declarada_no_cloudbuild():
     """Sem --concurrency o deploy volta pro default 80 e o tuning vivo (8) some."""
     txt = (_RAIZ / "cloudbuild.yaml").read_text(encoding="utf-8")
@@ -49,5 +63,6 @@ def test_concurrency_declarada_no_cloudbuild():
 
 if __name__ == "__main__":
     test_statement_timeout_morre_antes_do_request_http()
+    test_dockerfile_nao_sobrepoe_query_timeout()
     test_concurrency_declarada_no_cloudbuild()
     print(f"ok — query_timeout={_query_timeout()}s < http={_http_timeout()}s")
