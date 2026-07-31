@@ -30,6 +30,12 @@ steps:
   - name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
     id: 'smoke-imports'
     entrypoint: python
+    # O Dockerfile faz `pip install --user` (pacotes em /root/.local). Em runtime
+    # o CMD roda como root e acha; como STEP do Cloud Build o HOME muda e o
+    # user-site nao e resolvido -> `No module named 'mcp'` mesmo com o pacote
+    # instalado. PYTHONPATH explicito e deterministico (nao depende de HOME).
+    env:
+      - 'PYTHONPATH=/root/.local/lib/python3.11/site-packages'
     args:
       - '-c'
       - |
