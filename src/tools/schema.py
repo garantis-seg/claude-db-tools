@@ -28,12 +28,27 @@ async def list_tables(schema: str = "public") -> str:
         - list_tables("cnpj_raw")  # Lists tables in cnpj_raw schema
     """
     try:
+        # estimated_rows vem de pg_class.reltuples, NAO de pg_stat.n_live_tup.
+        # n_live_tup mora no coletor de estatistica, que ZERA em restart do cluster:
+        # em 2026-08-11 o crash de host as 15:10 UTC fez 142 de 181 tabelas do schema
+        # `leads` reportarem 0 e `leads.processos` reportar 177 contra 1.579.251 reais.
+        # Nao e o modo benigno "0 = tabela vazia" -- e numero PLAUSIVEL errado por 4
+        # ordens de grandeza, na ferramenta que se usa pra provar que tabela esta morta.
+        # reltuples mora em pg_class (catalogo em DISCO) e sobrevive ao restart; fica
+        # stale entre autovacuums, e por isso `last_analyze` vai junto na resposta --
+        # a defasagem tipica medida foi ~7%, contra as 4 ordens de grandeza do outro.
+        # -1 = nunca analisada (semantica do proprio Postgres); preservada como NULL.
         sql = """
             SELECT
                 t.tablename as table_name,
                 pg_size_pretty(pg_total_relation_size(quote_ident(t.schemaname) || '.' || quote_ident(t.tablename))) as size,
-                COALESCE(s.n_live_tup, 0) as estimated_rows
+                CASE WHEN c.reltuples < 0 THEN NULL
+                     ELSE c.reltuples::bigint END as estimated_rows,
+                GREATEST(s.last_analyze, s.last_autoanalyze) as estimated_rows_as_of,
+                COALESCE(s.n_live_tup, 0) as live_tup_since_stats_reset
             FROM pg_tables t
+            JOIN pg_namespace n ON n.nspname = t.schemaname
+            JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.tablename
             LEFT JOIN pg_stat_user_tables s
                 ON t.schemaname = s.schemaname AND t.tablename = s.relname
             WHERE t.schemaname = %s

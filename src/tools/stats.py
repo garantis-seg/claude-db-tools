@@ -32,19 +32,30 @@ async def get_stats(table: str, schema: str = "cnpj_raw") -> str:
     """
     try:
         # Get table statistics
+        # Os campos de pg_stat_user_tables (live_rows, dead_rows, modifications_*) sao
+        # CUMULATIVOS desde `stats_reset`, e o coletor ZERA em restart do cluster --
+        # 2026-08-11 15:10 UTC foi o ultimo. Sem a data ao lado, `live_rows: 0` de tabela
+        # viva e indistinguivel de tabela morta. Por isso vem junto:
+        #   stats_reset  -> desde quando os cumulativos contam (subtraia antes de dizer "all-time")
+        #   reltuples    -> estimativa que mora em pg_class (catalogo em DISCO), sobrevive ao restart
         stats_sql = """
             SELECT
-                schemaname,
-                relname as table_name,
-                n_live_tup as live_rows,
-                n_dead_tup as dead_rows,
-                n_mod_since_analyze as modifications_since_analyze,
-                last_vacuum,
-                last_autovacuum,
-                last_analyze,
-                last_autoanalyze
-            FROM pg_stat_user_tables
-            WHERE schemaname = %s AND relname = %s
+                s.schemaname,
+                s.relname as table_name,
+                s.n_live_tup as live_rows,
+                s.n_dead_tup as dead_rows,
+                s.n_mod_since_analyze as modifications_since_analyze,
+                s.last_vacuum,
+                s.last_autovacuum,
+                s.last_analyze,
+                s.last_autoanalyze,
+                CASE WHEN c.reltuples < 0 THEN NULL
+                     ELSE c.reltuples::bigint END as estimated_rows_reltuples,
+                (SELECT stats_reset FROM pg_stat_database
+                  WHERE datname = current_database()) as cumulative_counters_since
+            FROM pg_stat_user_tables s
+            JOIN pg_class c ON c.oid = s.relid
+            WHERE s.schemaname = %s AND s.relname = %s
         """
 
         logger.info(f"Getting stats for: {schema}.{table}")
