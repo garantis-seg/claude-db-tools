@@ -131,7 +131,17 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
     """
     sql_upper = sql.strip().upper()
 
-    allowed_operations = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'GRANT', 'REVOKE', 'COMMENT', 'DO']
+    # VACUUM / ANALYZE / REINDEX entraram em 2026-08-15: sao MANUTENCAO, nao
+    # escrita de dado — nenhum deles pode perder linha. Ate aqui o unico jeito de
+    # rodar VACUUM FULL em prod era escrever uma migration de um statement so e
+    # chamar `run-migration-internal?autocommit=true`, o que polui o ledger de
+    # `app.schema_migrations` (que existe pra mudanca de SCHEMA) com manutencao
+    # que se repete. E ela SE REPETE: bloat volta.
+    # Contexto: 2 design docs do execucao-fiscal ja adiaram esse reclaim
+    # ("physical reclaim needs VACUUM FULL/pg_repack — plan the reclaim window",
+    # D1 detriplication 2026-07-04 e canonical_conflict_retention).
+    allowed_operations = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
+                          'GRANT', 'REVOKE', 'COMMENT', 'DO', 'VACUUM', 'ANALYZE', 'REINDEX']
 
     if not any(sql_upper.startswith(op) for op in allowed_operations):
         return json.dumps({
@@ -147,8 +157,16 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
             "error": MOJIBAKE_ERROR,
         })
 
-    # Check if autocommit is needed
-    needs_autocommit = "CONCURRENTLY" in sql_upper
+    # Check if autocommit is needed.
+    # ⚠️ VACUUM entra aqui por uma razao DIFERENTE do CONCURRENTLY, e as duas sao
+    # obrigatorias: o Postgres proibe os dois dentro de bloco de transacao, e o
+    # `execute_write` abre transacao implicita por default. Sem esta linha o
+    # VACUUM seria aceito pelo allowlist e morreria em
+    # "VACUUM cannot run inside a transaction block" — pior que estar bloqueado,
+    # porque parece bug do banco.
+    # ⛔ ANALYZE e REINDEX (sem CONCURRENTLY) RODAM em transacao e NAO entram —
+    # por-los aqui trocaria o rollback-em-erro deles por escrita solta.
+    needs_autocommit = "CONCURRENTLY" in sql_upper or sql_upper.startswith("VACUUM")
 
     try:
         logger.info(f"Executing statement: {sql[:100]}...")
