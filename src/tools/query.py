@@ -118,7 +118,14 @@ ESPINHA_SEM_SCHEMA = frozenset(t.split(".", 1)[1] for t in TABELAS_ESPINHA)
 
 _IDENT = r'(?:"[^"]*"|[A-Za-z_][A-Za-z0-9_$]*)'
 _QUALIF = r"{i}(?:\s*\.\s*{i})?".format(i=_IDENT)
-_LISTA = r"{q}(?:\s*,\s*{q})*".format(q=_QUALIF)
+#: `ONLY` e `*` sao por ELEMENTO na gramatica do PG:
+#: `TRUNCATE tmp_a *, ONLY leads.meritos` e valido, e sem isto o 2o elemento
+#: nao casa e a espinha escapa no meio de uma lista.
+_ELEM = r"(?:ONLY\s+)?{q}\s*\*?".format(q=_QUALIF)
+_LISTA = r"{e}(?:\s*,\s*{e})*".format(e=_ELEM)
+#: ⛔ `\s+` NAO serve como separador antes do alvo: o PG nao exige espaco antes de
+#: identificador citado, entao `DELETE FROM"leads"."meritos"` e valido e escapava.
+_SEP = r'(?:\s+|\s*(?="))'
 
 #: ⛔ So a posicao de ALVO e olhada, nao o statement inteiro. `DELETE FROM tmp
 #: WHERE id IN (SELECT id FROM leads.meritos)` LE a espinha e nao a apaga —
@@ -126,30 +133,54 @@ _LISTA = r"{q}(?:\s*,\s*{q})*".format(q=_QUALIF)
 #: e o modo de falha que este card existe pra evitar.
 #: ⛔ `DROP INDEX`/`DROP VIEW` ficam de fora de proposito: nao perdem linha e se
 #: recriam. Se aparecerem aqui, a lista de objetos e que deve crescer.
+#:
+#: ⚠️ TRUNCATE e DROP ficam ANCORADOS no inicio do statement porque nao ha como
+#: embutir os dois em outro comando (o PG nao aceita `EXPLAIN TRUNCATE`, e
+#: `PREPARE` so recebe SELECT/INSERT/UPDATE/DELETE/MERGE/VALUES). O DELETE, que
+#: TEM esses invólucros, e tratado a parte em `_DELETE_ALVO`.
 _ALVOS = (
-    ("DELETE", re.compile(r"^\s*DELETE\s+FROM\s+(?:ONLY\s+)?(" + _QUALIF + r")", re.I), False),
-    ("TRUNCATE", re.compile(r"^\s*TRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?(" + _LISTA + r")", re.I), False),
-    ("DROP TABLE", re.compile(r"^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(" + _LISTA + r")", re.I), False),
-    ("DROP SCHEMA", re.compile(r"^\s*DROP\s+SCHEMA\s+(?:IF\s+EXISTS\s+)?(" + _LISTA + r")", re.I), True),
+    ("TRUNCATE", re.compile(r"^\s*TRUNCATE" + _SEP + r"(?:TABLE" + _SEP + r")?(" + _LISTA + r")", re.I), False),
+    ("DROP TABLE", re.compile(r"^\s*DROP\s+TABLE" + _SEP + r"(?:IF\s+EXISTS" + _SEP + r")?(" + _LISTA + r")", re.I), False),
+    ("DROP SCHEMA", re.compile(r"^\s*DROP\s+SCHEMA" + _SEP + r"(?:IF\s+EXISTS" + _SEP + r")?(" + _LISTA + r")", re.I), True),
 )
 
-#: ⚠️ CTE que MODIFICA: `WITH d AS (DELETE FROM leads.meritos RETURNING id) SELECT
-#: count(*) FROM d`. O verbo lider do statement e `WITH`, entao nenhum padrao de
-#: `_ALVOS` casa. Hoje o corpo que COMECA com WITH morre no allowlist (`WITH` nao
-#: esta em `allowed_operations`) — mas isso e acidente, nao guarda: num corpo
-#: multi-statement o allowlist so olha o 1o verbo, entao
-#: `INSERT INTO t VALUES (1); WITH d AS (DELETE FROM leads.meritos ...) SELECT ...`
-#: JA passa hoje. ⛔ Nao remova isto contando com o allowlist: bastaria alguem
-#: acrescentar `WITH` la (parece so simetria com o tool `query`) pra abrir o furo.
-#: `( DELETE FROM` so e sintaxe valida dentro de CTE, entao casar em qualquer
-#: posicao aqui nao traz falso positivo — `(SELECT ...)` de subquery nao casa.
-_CTE_DESTRUTIVA = re.compile(r"\(\s*DELETE\s+FROM\s+(?:ONLY\s+)?(" + _QUALIF + r")", re.I)
+#: 🚨 O `DELETE` e procurado em QUALQUER posicao do statement ja mascarado, e nao
+#: ancorado no inicio — porque ele tem no minimo quatro involucros que empurram o
+#: verbo lider pra outra palavra, TODOS medidos contra o parser real (pglast):
+#:   `WITH ids AS (...) DELETE FROM leads.meritos ...`   -> lider WITH
+#:   `EXPLAIN ANALYZE DELETE FROM leads.meritos`         -> lider EXPLAIN, e EXECUTA
+#:   `PREPARE p AS DELETE FROM leads.meritos WHERE id=$1`-> lider PREPARE
+#:   `WITH d AS (DELETE ... RETURNING id) SELECT ...`    -> lider WITH
+#: ⭐ Buscar em qualquer posicao NAO traz falso positivo porque string literal,
+#: comentario e corpo de `$tag$` JA estao mascarados quando esta busca roda — e
+#: `DELETE FROM x WHERE id IN (SELECT id FROM leads.meritos)` tem um unico
+#: `DELETE FROM`, e ele aponta pra `x`. (A subquery diz `SELECT ... FROM`.)
+#: ⚠️ Nao alcanca `MERGE ... WHEN MATCHED THEN DELETE`, que apaga sem `FROM`.
+#: Limitacao declarada no README, nao esquecimento.
+_DELETE_ALVO = re.compile(r"\bDELETE\s+FROM" + _SEP + r"(?:ONLY" + _SEP + r")?(" + _QUALIF + r")", re.I)
 
-_TAG_DOLAR = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+#: ⛔ `$` e ident_cont no PG (veja o proprio `_IDENT` acima): em `CREATE TABLE
+#: a$$b (x int)` o `$$` NAO abre dollar-quote. Casar ali fazia o mascarador
+#: engolir tudo ate o proximo `$$` — medido: um DELETE inteiro sumia entre
+#: `a$$b` e `c$$d`. O `(?<![A-Za-z0-9_$])` e o que separa os dois casos.
+#: ⚠️ `dolq_start` do PG e `[A-Za-z\200-\377_]`, entao tag com byte alto (`$é$`)
+#: e valida — sem ela o `DO $é$...$é$` de medicao era RECUSADO por engano.
+_TAG_DOLAR = re.compile(r"(?<![A-Za-z0-9_$])\$(?:[^\W\d][^\W]*)?\$", re.UNICODE)
+
+#: Identificador citado: `"leads"` e um nome; `"x; DELETE FROM ..."` e um nome
+#: TAMBEM, mas com `;` dentro. Ver `_mascara` pro porque de tratar os dois
+#: diferente.
+_IDENT_CITADO = re.compile(r'"([^"]*)"')
+_PALAVRA_SIMPLES = re.compile(r"^[A-Za-z0-9_$]*$")
 
 
-def _mascara(sql: str):
+def _mascara(sql: str, dollar: bool = True):
     """Troca por ESPACO comentario, string literal e bloco $tag$...$tag$.
+
+    `dollar=False` deixa o corpo do `$tag$` VISIVEL — usado so pra responder
+    "o que a guarda recusaria se olhasse dentro do bloco?", que e o log do desvio
+    conhecido. ⛔ Nunca use isso pra DECIDIR: e olhar dentro que mata o truque de
+    medicao.
 
     Devolve `(mascarado, aberto)`. Preserva o comprimento — a saida e um espelho
     posicional da entrada — entao o que sobra vivo pode ser fatiado por `;` e
@@ -175,16 +206,44 @@ def _mascara(sql: str):
     i, n = 0, len(sql)
     aberto = False
     while i < n:
+        preserva = False
         if sql.startswith("--", i):
-            j = sql.find("\n", i)
-            j = n if j < 0 else j
+            # ⛔ O `non_newline` do scan.l do PG e `[^\n\r]`: um CR sozinho (arquivo
+            # com fim de linha Mac/CRLF partido) TERMINA o comentario. Procurar so
+            # `\n` fazia o mascarador comer o resto do corpo — medido: um
+            # `-- x<CR>DELETE FROM leads.meritos` inteiro sumia.
+            fim = [p for p in (sql.find("\n", i), sql.find("\r", i)) if p >= 0]
+            j = min(fim) if fim else n
         elif sql.startswith("/*", i):
             j = sql.find("*/", i + 2)
             j = n if j < 0 else j + 2
+        elif sql[i] == '"':
+            # 🚨 Identificador citado: o mascarador NAO pode ignora-lo, porque os
+            # outros 4 construtos disparam DENTRO dele — `CREATE TABLE "a--b"`
+            # abria comentario e engolia o `; DELETE ...` seguinte (medido).
+            # ⭐ Mas mascarar sempre criaria o inverso: `CREATE TABLE "x; DELETE
+            # FROM leads.meritos"` e UM CreateStmt inofensivo, e mascarar o miolo
+            # tiraria o `;` de vista... enquanto NAO mascarar recusa um comando
+            # que nao apaga nada. Por isso o miolo so e PRESERVADO quando e uma
+            # palavra simples — que e o caso do alvo de verdade,
+            # `"leads"."meritos"`, que precisa continuar casando.
+            achou = _IDENT_CITADO.match(sql, i)
+            if achou:
+                j = achou.end()
+                preserva = bool(_PALAVRA_SIMPLES.match(achou.group(1)))
+            else:
+                j, aberto = n, True
         elif sql[i] == "'":
             # `E'...'` (e `U&'...'`) usam BARRA pra escapar; a string comum usa `''`.
-            # Sem este ramo o lexer fecha a string uma aspa cedo demais.
-            escapa = i > 0 and sql[i - 1] in "EeUu&"
+            # ⛔ O teste e de TOKEN, nao de caractere: `sql[i-1] in "EeUu&"` casava
+            # o `E` final de `LIKE`/`TRUE`/`CASE`/`TABLE`/`DELETE` e ligava o modo
+            # escape numa string comum — medido, `... LIKE'a\'; DELETE FROM
+            # leads.meritos; --'` atravessava inteiro.
+            escapa = (
+                i > 0
+                and sql[i - 1] in "EeUu&"
+                and (i < 2 or not (sql[i - 2].isalnum() or sql[i - 2] in "_$"))
+            )
             j, fechou = i + 1, False
             while j < n:
                 if escapa and sql[j] == "\\":
@@ -198,7 +257,7 @@ def _mascara(sql: str):
                     fechou = True
                     break
             aberto = aberto or not fechou
-        elif sql[i] == "$" and _TAG_DOLAR.match(sql, i):
+        elif dollar and sql[i] == "$" and _TAG_DOLAR.match(sql, i):
             tag = _TAG_DOLAR.match(sql, i).group(0)
             j = sql.find(tag, i + len(tag))
             if j < 0:
@@ -208,18 +267,26 @@ def _mascara(sql: str):
         else:
             i += 1
             continue
-        for k in range(i, min(j, n)):
-            out[k] = " "
+        if not preserva:
+            for k in range(i, min(j, n)):
+                out[k] = " "
         i = max(j, i + 1)
     return "".join(out), aberto
 
 
 def _normaliza(ident: str) -> str:
-    """`"leads" . "Meritos"` -> `leads.meritos`."""
+    """`ONLY "leads" . "Meritos" *` -> `leads.meritos`.
+
+    ⛔ O `ONLY` e o `*` sao POR ELEMENTO na lista do TRUNCATE, entao chegam colados
+    no nome do 2o em diante. Sem tira-los aqui, `TRUNCATE tmp_a, ONLY
+    leads.meritos` normalizava pra `only leads.meritos` e nao casava a lista —
+    medido, a espinha escapava no meio de uma lista de alvos.
+    """
+    ident = re.sub(r"^\s*ONLY\b", "", ident, flags=re.I).strip().rstrip("*").strip()
     return ".".join(p.strip().strip('"').lower() for p in ident.split("."))
 
 
-def _alvo_de_espinha(sql: str):
+def _alvo_de_espinha(sql: str, dentro_do_bloco: bool = False):
     """Devolve `(verbo, alvo)` do 1o statement destrutivo sobre a espinha, ou None.
 
     Olha TODOS os statements, nao so o lider do corpo: o `/api/execute` aceita
@@ -238,19 +305,21 @@ def _alvo_de_espinha(sql: str):
         # e `arquivo.meritos_20260813` tem de continuar passando.
         return alvo if "." not in alvo and alvo in ESPINHA_SEM_SCHEMA else None
 
-    mascarado, aberto = _mascara(sql)
+    mascarado, aberto = _mascara(sql, dollar=not dentro_do_bloco)
 
     # 🚨 Lexer que terminou com literal aberto pode ter ENGOLIDO um statement que o
     # Postgres executa. Nao da pra confiar no fatiamento, entao a decisao volta pro
     # texto CRU: citou espinha e verbo destrutivo, recusa. Vale so pro SQL
     # malformado ou exotico — o preco de errar aqui e uma recusa a explicar, e o
     # preco de nao errar e um DELETE invisivel.
-    if aberto:
-        for tabela in sorted(TABELAS_ESPINHA):
-            if tabela in sql.lower() and any(
-                v in sql.upper() for v in ("DELETE", "TRUNCATE", "DROP")
-            ):
-                return "DESTRUTIVO (SQL nao parseavel)", tabela
+    # ⛔ Varre os TRES conjuntos, nao so o qualificado: e justamente aqui, onde o
+    # parse ja e indigno de confianca, que `DELETE FROM meritos` (nome nu, via
+    # search_path) e `DROP SCHEMA leads CASCADE` escapavam.
+    if aberto and any(v in sql.upper() for v in ("DELETE", "TRUNCATE", "DROP")):
+        cru = sql.lower()
+        for nome in sorted(TABELAS_ESPINHA | ESPINHA_SEM_SCHEMA | ESPINHA_SCHEMAS):
+            if re.search(r"(?<![A-Za-z0-9_$.])" + re.escape(nome) + r"(?![A-Za-z0-9_$])", cru):
+                return "DESTRUTIVO (SQL nao parseavel)", nome
 
     for statement in mascarado.split(";"):
         for verbo, padrao, e_schema in _ALVOS:
@@ -261,11 +330,40 @@ def _alvo_de_espinha(sql: str):
                 alvo = _protegido(bruto, e_schema)
                 if alvo:
                     return verbo, alvo
-        for achou in _CTE_DESTRUTIVA.finditer(statement):
+        for achou in _DELETE_ALVO.finditer(statement):
             alvo = _protegido(achou.group(1), False)
             if alvo:
-                return "DELETE (em CTE)", alvo
+                return "DELETE", alvo
     return None
+
+
+def recusa_espinha(sql: str, rota: str):
+    """Roda a guarda e devolve o JSON de recusa, ou None se pode seguir.
+
+    🚨 Vale em TODA rota que manda texto pro `cursor.execute`, nao so no
+    `/api/execute`. Medido em 2026-09-07: `query("SELECT 1 LIMIT 1; DELETE FROM
+    leads.meritos")` devolvia `success=True` e a string INTEIRA ia pro cursor — o
+    check e `startswith("SELECT")`, e o `LIMIT` nem chegava a ser acrescentado
+    porque a palavra ja estava no corpo. O mesmo valia pro `/api/explain`
+    (`EXPLAIN ANALYZE <dml>` executa) e pro `/api/count`, que concatena o `where`
+    cru. Guarda so no `/api/execute` seria teatro: tres portas do MESMO servico,
+    com o MESMO token, chegando na MESMA tabela.
+    """
+    espinha = _alvo_de_espinha(sql)
+    if not espinha:
+        return None
+    verbo, alvo = espinha
+    logger.warning(
+        "espinha_guard: RECUSADO %s sobre %s via %s | sql=%r", verbo, alvo, rota, sql[:4000]
+    )
+    return json.dumps({
+        "success": False,
+        "espinha_guard": True,
+        "verbo": verbo,
+        "tabela": alvo,
+        "rota": rota,
+        "error": espinha_error(verbo, alvo),
+    })
 
 
 def espinha_error(verbo: str, alvo: str) -> str:
@@ -335,6 +433,15 @@ async def query(sql: str, limit: int = 1000) -> str:
             "success": False,
             "error": "Only SELECT queries allowed. Use 'execute' tool for write operations."
         })
+
+    # 🚨 `startswith("SELECT")` NAO faz desta rota read-only: o psycopg2 executa
+    # multi-statement, entao `SELECT 1 LIMIT 1; DELETE FROM leads.meritos` passava
+    # o check e ia inteiro pro cursor (medido em 2026-09-07). Hoje o DELETE nao
+    # PERSISTE por acidente — o `putconn` do pool dá rollback numa conexao com
+    # transacao aberta — e "por acidente" nao e uma garantia que se cita.
+    recusa = recusa_espinha(sql, "/api/query")
+    if recusa:
+        return recusa
 
     # Enforce limit
     effective_limit = min(limit, settings.max_rows)
@@ -417,25 +524,14 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
             "error": f"Only write operations allowed. Use 'query' tool for SELECT. Allowed: {', '.join(allowed_operations)}"
         })
 
-    espinha = _alvo_de_espinha(sql)
-    if espinha:
-        verbo, alvo = espinha
-        # ⛔ Recusa CALADA vira "o comando nao fez nada" e a proxima tentativa e
-        # por outra porta — que e o modo de falha que este card existe pra evitar.
-        # ⛔ E loga o SQL QUASE INTEIRO, nao `[:100]` como o log de sucesso logo
-        # abaixo: num corpo multi-statement o comando destrutivo costuma ser o
-        # SEGUNDO. Medido no incidente de 07/09 — num batch de 163 chars o DELETE
-        # comecava no char 119, ou seja, invisivel num corte em 100.
-        logger.warning(
-            "espinha_guard: RECUSADO %s sobre %s | sql=%r", verbo, alvo, sql[:4000]
-        )
-        return json.dumps({
-            "success": False,
-            "espinha_guard": True,
-            "verbo": verbo,
-            "tabela": alvo,
-            "error": espinha_error(verbo, alvo),
-        })
+    # ⛔ Recusa CALADA vira "o comando nao fez nada" e a proxima tentativa e por
+    # outra porta — que e o modo de falha que este card existe pra evitar. O log
+    # guarda o SQL QUASE INTEIRO, nao `[:100]` como o de sucesso logo abaixo: num
+    # corpo multi-statement o comando destrutivo costuma ser o SEGUNDO. Medido no
+    # incidente de 07/09 — num batch de 163 chars o DELETE comecava no char 119.
+    recusa = recusa_espinha(sql, "/api/execute")
+    if recusa:
+        return recusa
 
     # ⚠️ Buraco CONHECIDO, deliberado e nao fechavel sem custo: o corpo de um
     # `DO $$...$$` e opaco pra guarda acima — e e essa opacidade que mantem vivo o
@@ -443,14 +539,18 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
     # embrulhar o DELETE num DO. Nao da pra distinguir os dois casos (um `RAISE`
     # dentro de um `IF` que nunca roda ja derrota qualquer heuristica), entao o que
     # se compra aqui e VISIBILIDADE: o desvio existe, mas nao passa despercebido.
-    if (
-        sql_upper.startswith("DO")
-        and any(t in sql.lower() for t in TABELAS_ESPINHA)
-        and any(v in sql_upper for v in ("DELETE", "TRUNCATE", "DROP"))
-    ):
+    # ⛔ O predicado e a PROPRIA guarda rodada com o corpo do bloco visivel — nao
+    # um `startswith("DO")` + nome qualificado. A 1a versao era isso, e ficava MUDA
+    # nas duas formas que mais importam (medido): nome nu via `search_path`, e
+    # `INSERT ...; DO $$ ... $$` multi-statement, que e literalmente a tecnica que
+    # esta guarda existe pra derrotar. Chegar aqui ja implica que a guarda de
+    # verdade passou, logo qualquer achado esta DENTRO de um `$tag$`.
+    oculto = _alvo_de_espinha(sql, dentro_do_bloco=True)
+    if oculto:
         logger.warning(
-            "espinha_guard: bloco DO cita tabela-espinha com verbo destrutivo — "
-            "NAO recusado (buraco conhecido, ver query.py) | sql=%r", sql[:200]
+            "espinha_guard: BURACO CONHECIDO — %s sobre %s dentro de bloco $tag$ "
+            "(DO/FUNCTION); NAO recusado, ver query.py | sql=%r",
+            oculto[0], oculto[1], sql[:4000],
         )
 
     if not allow_mojibake and MOJIBAKE_SIG.search(sql):
@@ -517,6 +617,12 @@ async def count(table: str, where: Optional[str] = None) -> str:
             sql = f"SELECT COUNT(*) as count FROM {table} WHERE {where}"
         else:
             sql = f"SELECT COUNT(*) as count FROM {table}"
+
+        # ⛔ `table` e `where` sao concatenados CRUS (e por GET). A guarda roda
+        # sobre o SQL ja montado, que e o texto que chega no cursor.
+        recusa = recusa_espinha(sql, "/api/count")
+        if recusa:
+            return recusa
 
         logger.info(f"Counting rows: {sql}")
         start_time = time.time()

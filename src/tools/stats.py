@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from ..database import execute_query, get_connection
+from .query import recusa_espinha
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,15 @@ async def explain_query(sql: str, analyze: bool = True) -> str:
         - explain_query("SELECT * FROM large_table", analyze=False)  # Just plan, no execution
     """
     try:
+        # 🚨 `analyze=True` e o DEFAULT aqui e no handler HTTP, e `EXPLAIN ANALYZE`
+        # EXECUTA o comando — inclusive DML. Sem esta linha, `EXPLAIN ANALYZE
+        # DELETE FROM leads.meritos` apagava pela rota que todo mundo assume ser
+        # de leitura. Modo de falha perverso: e o comando que a pessoa digita
+        # JUSTAMENTE por acreditar que nao apaga.
+        recusa = recusa_espinha(sql, "/api/explain")
+        if recusa:
+            return recusa
+
         # Build EXPLAIN command
         if analyze:
             explain_cmd = "EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT TEXT)"

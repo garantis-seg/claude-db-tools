@@ -171,8 +171,12 @@ Se você precisa de acesso ao banco em produção, use conexão direta via `psyc
 
 ## Guarda de tabelas-espinha
 
-`DELETE` / `TRUNCATE` / `DROP` sobre um conjunto **nomeado** de tabelas são recusados pelo
-`/api/execute` (`"espinha_guard": true` no response). A lista e o motivo de cada linha estão em
+`DELETE` / `TRUNCATE` / `DROP` sobre um conjunto **nomeado** de tabelas são recusados —
+em `/api/execute`, `/api/query`, `/api/count` e `/api/explain` (`"espinha_guard": true` no
+response, com a rota que barrou). ⭐ As quatro, e não só a primeira: são portas do **mesmo
+serviço**, com o **mesmo token**, chegando na **mesma tabela** — `SELECT 1 LIMIT 1; DELETE FROM
+leads.meritos` passava pelo `/api/query`, e `EXPLAIN ANALYZE <dml>` **executa**.
+A lista e o motivo de cada linha estão em
 [`src/tools/query.py::TABELAS_ESPINHA`](src/tools/query.py); os testes, em
 [`tests/test_guarda_espinha.py`](tests/test_guarda_espinha.py).
 
@@ -193,24 +197,38 @@ Ela fecha **um** canal, e é tudo o que ela faz. A sessão só caiu aqui porque 
 Firebase — **nada impede a próxima de achar uma terceira porta.** O que se compra é tornar o desvio
 **difícil e visível**, não impossível. ⛔ Não leia a denylist como garantia.
 
-Concretamente, e medido, o que ela **não** alcança:
+Estes desvios foram **exercidos contra o parser real do Postgres** (`pglast`/libpg_query) e
+**passam**:
 
 | desvio | por quê |
 |---|---|
-| `DO $$ BEGIN DELETE FROM leads.meritos; END $$` | o corpo do bloco é opaco de propósito — é isso que mantém vivo o truque de medição `DO … RAISE EXCEPTION` (**116 usos** no histórico). Passa, mas **fica logado** em WARNING. |
+| `DO $$ BEGIN DELETE FROM leads.meritos; END $$` | o corpo do bloco é opaco **de propósito** — é isso que mantém vivo o truque de medição `DO … RAISE EXCEPTION`. Passa, mas **fica logado** em WARNING, nomeando verbo e tabela. |
 | `ALTER TABLE … RENAME TO zz; DROP TABLE zz` | derrota qualquer denylist **por nome**: o nome protegido deixa de existir antes da checagem. |
-| `CREATE VIEW v AS SELECT * FROM <espinha>; DELETE FROM v` | view de uma tabela só é auto-updatable; resolver isso exigiria consultar `pg_depend` em tempo de guarda. |
+| `CREATE VIEW v AS SELECT * FROM <espinha>; DELETE FROM v` | view de uma tabela só é auto-updatable; resolver exigiria consultar `pg_depend` em tempo de guarda. |
 | `TRUNCATE <satélite> CASCADE` | a relação mora no grafo de FK, não no texto. |
+| `MERGE … WHEN MATCHED THEN DELETE` | apaga sem `FROM`; 4º verbo, fora da especificação do card. |
 | `UPDATE … SET col = NULL` / `ALTER TABLE … DROP COLUMN` | fora dos 3 verbos, por especificação. Perda de dado igualmente irreversível. |
 
-### O custo, medido antes de ligar
+⇒ **a guarda é quebra-molas, não fronteira.** Quem sabe o que está fazendo passa; o ponto é que
+passar vira uma **decisão**, não um descuido.
 
-No histórico de 2026-06-27 a 2026-09-07 (2 meses e 11 dias, 324 chamadas ao `/api/execute`) esta
-guarda teria disparado **8 vezes**: **7 sobre trabalho legítimo e autorizado pelo Elton na hora**, e
-**1** sobre o incidente. ⇒ **a fricção é o produto, não um efeito colateral** — ela força a pausa e
-o rastro em papel. Por isso a recusa **nomeia o caminho certo** em vez de só dizer não, e por isso
-⛔ **não existe flag de bypass**: aqui o risco é *autorização*, não dado corrompido (o
-`allow_mojibake` é o precedente que **não** se aplica).
+### O custo: a fricção é o produto
+
+Uma varredura dos transcripts (2026-06-27 → 2026-09-07) enumerou **9 call sites** que esta guarda
+teria recusado. **8 eram trabalho legítimo**, autorizado pelo Elton em mensagem citável minutos
+antes — incluindo uma migration que já existia como `.sql` no repo e foi aplicada por aqui. **1** era
+o incidente.
+
+⇒ **a fricção não é efeito colateral, é o mecanismo**: ela força a pausa e o rastro em papel
+justamente nos casos que "pareciam óbvios na hora". Por isso a recusa **nomeia o caminho certo** em
+vez de só dizer não, e por isso ⛔ **não existe flag de bypass** — aqui o risco é *autorização*, não
+dado corrompido, então o precedente do `allow_mojibake` **não** se aplica.
+
+⚠️ A enumeração dos 9 (com data, SQL e a citação humana de cada um) está em
+`~/.claude/plans/REPORT-M-buraco-lateral-api-execute-2026-09-07.md`. ⛔ Não cite um *denominador*
+("N chamadas no período") a partir dela: a varredura conta **call sites**, e um `rg` ingênuo por
+`api/execute` conta **menções em transcript** — as duas populações diferem por mais de uma ordem de
+grandeza.
 
 ### A regra escrita que acompanha o freio
 

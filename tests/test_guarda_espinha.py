@@ -110,7 +110,7 @@ async def test_toda_tabela_da_lista_e_protegida(tabela, espiao):
 
 @pytest.mark.asyncio
 async def test_drop_schema_leva_a_espinha_junto_sem_nomear_tabela(espiao):
-    """`DROP SCHEMA leads CASCADE` apaga 5 tabelas da lista sem citar nenhuma."""
+    """`DROP SCHEMA leads CASCADE` leva 3 tabelas da lista sem citar nenhuma."""
     out = await _run("DROP SCHEMA leads CASCADE")
     assert out["success"] is False
     assert out["verbo"] == "DROP SCHEMA"
@@ -308,7 +308,7 @@ async def test_cte_que_apaga_nao_passa_pelo_lider_WITH(espiao):
     )
     out = await _run(sql)
     assert out["success"] is False, "CTE que apaga passou"
-    assert out["verbo"] == "DELETE (em CTE)"
+    assert out["verbo"] == "DELETE"
     assert out["tabela"] == "leads.meritos"
     assert not espiao
 
@@ -341,6 +341,126 @@ async def test_create_function_com_delete_no_corpo_nao_e_recusado(espiao):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sql", [
+    # --- involucros que empurram o verbo lider pra outra palavra --------------
+    # (todos verificados contra o parser real do PG via pglast)
+    "CREATE TEMP TABLE t (x int); WITH ids AS (SELECT 1 AS id) "
+    "DELETE FROM leads.meritos WHERE id IN (SELECT id FROM ids)",
+    "INSERT INTO zz (t) VALUES (1); "
+    "WITH d AS (DELETE FROM leads.meritos RETURNING id) SELECT count(*) FROM d",
+    # 🚨 EXPLAIN ANALYZE EXECUTA — e e o comando que se digita por achar que nao
+    "CREATE TEMP TABLE t (x int); EXPLAIN ANALYZE DELETE FROM leads.meritos WHERE id=1",
+    "CREATE TEMP TABLE t (x int); PREPARE p AS DELETE FROM leads.meritos WHERE id=1",
+    # --- o PG nao exige separador antes de identificador citado ---------------
+    'DELETE FROM"leads"."meritos" WHERE id=1',
+    'TRUNCATE"leads"."meritos"',
+    'DROP SCHEMA"leads"CASCADE',
+    'DELETE FROM"meritos"',
+    # --- ONLY / * sao POR ELEMENTO da lista ----------------------------------
+    "TRUNCATE tmp_a, ONLY leads.meritos",
+    "TRUNCATE tmp_a *, leads.meritos RESTART IDENTITY CASCADE",
+    # --- identificador citado engolindo o mascarador -------------------------
+    'CREATE TABLE "a--b" (x int); DELETE FROM leads.meritos WHERE id = 1',
+    'CREATE TABLE "a/*b" (x int); DELETE FROM leads.meritos WHERE id = 1',
+    'CREATE TABLE "it\'s" (x int); DELETE FROM leads.meritos',
+    # --- `$` e ident_cont: `a$$b` NAO abre dollar-quote ----------------------
+    "CREATE TABLE a$$b (x int); DELETE FROM leads.meritos; CREATE TABLE c$$d (y int)",
+    # --- CR sozinho TERMINA comentario no lexer do PG ------------------------
+    "INSERT INTO zz (t) VALUES (1); -- x\rDELETE FROM leads.meritos",
+    # --- `E` final de palavra nao liga o modo escape -------------------------
+    "UPDATE zz_t SET x=1 WHERE nome LIKE'a\\'; DELETE FROM leads.meritos; --'",
+])
+async def test_desvio_medido_contra_o_parser_real_nao_passa(sql, espiao):
+    """⭐⭐ Achados da verificacao adversarial de 2026-09-07.
+
+    Cada um destes PASSAVA na 1a versao da guarda e foi confirmado contra o
+    parser real do Postgres (pglast/libpg_query) — nao sao hipoteses.
+    """
+    out = await _run(sql)
+    assert out["success"] is False, "PASSOU: {}".format(sql)
+    assert out["espinha_guard"] is True
+    assert not espiao, "chegou no execute_write: {}".format(sql)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sql,nome", [
+    ("INSERT INTO zz (t) VALUES ('aberto); DELETE FROM meritos", "meritos"),
+    ("INSERT INTO zz (t) VALUES ('aberto); DROP SCHEMA leads CASCADE", "leads"),
+])
+async def test_rede_de_literal_aberto_ve_nome_nu_e_schema(sql, nome, espiao):
+    """A rede varria so os nomes QUALIFICADOS — justamente no ramo onde o parse
+    ja e indigno de confianca. Nome nu e schema escapavam por ali."""
+    out = await _run(sql)
+    assert out["success"] is False
+    assert out["tabela"] == nome
+    assert not espiao
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sql", [
+    # o miolo do identificador citado nao e comando: 1 CreateStmt inofensivo
+    'CREATE TABLE "x; DELETE FROM leads.meritos" (a int)',
+    # tag de dollar-quote com byte alto e valida no PG (dolq_start inclui \\200-\\377)
+    "DO $é$ BEGIN DELETE FROM leads.meritos; RAISE EXCEPTION 'MEDIDA'; END $é$",
+])
+async def test_falso_positivo_do_lexer_foi_eliminado(sql, espiao):
+    out = await _run(sql)
+    assert out["success"] is True, "recusado sem precisar: {}".format(sql)
+
+
+# ---------------------------------------------------------------------------
+# 4. AS OUTRAS PORTAS — mesmo servico, mesmo token, mesma tabela
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_api_query_nao_e_porta_de_escrita(monkeypatch):
+    """🚨 `startswith("SELECT")` nao faz a rota read-only: o psycopg2 executa
+    multi-statement, e o `LIMIT` nem chega a ser anexado porque a palavra ja esta
+    no corpo. Guarda so no /api/execute seria teatro."""
+    vistos = []
+    monkeypatch.setattr(qmod, "execute_query", lambda sql, *a, **k: vistos.append(sql) or [])
+    out = json.loads(await qmod.query("SELECT 1 LIMIT 1; DELETE FROM leads.meritos"))
+    assert out["success"] is False
+    assert out["espinha_guard"] is True
+    assert out["rota"] == "/api/query"
+    assert not vistos, "o SQL chegou no cursor"
+
+
+@pytest.mark.asyncio
+async def test_api_query_continua_livre_pra_ler(monkeypatch):
+    """⛔ Controle: SELECT sobre a espinha e LEITURA e tem de seguir livre."""
+    monkeypatch.setattr(qmod, "execute_query", lambda sql, *a, **k: [{"n": 41}])
+    out = json.loads(await qmod.query("SELECT count(*) AS n FROM leads.meritos"))
+    assert out["success"] is True
+    assert out["data"] == [{"n": 41}]
+
+
+@pytest.mark.asyncio
+async def test_api_count_guarda_o_where_concatenado(monkeypatch):
+    vistos = []
+    monkeypatch.setattr(qmod, "execute_query", lambda sql, *a, **k: vistos.append(sql) or [])
+    out = json.loads(await qmod.count("zz_t", where="1=1; DELETE FROM leads.meritos"))
+    assert out["success"] is False
+    assert out["espinha_guard"] is True
+    assert not vistos
+
+
+@pytest.mark.asyncio
+async def test_api_explain_analyze_executa_e_por_isso_e_guardado(monkeypatch):
+    """`EXPLAIN ANALYZE <dml>` EXECUTA, e `analyze=True` e o default."""
+    smod = import_module("src.tools.stats")
+
+    def boom(*a, **k):
+        raise AssertionError("chegou no banco")
+
+    monkeypatch.setattr(smod, "get_connection", boom)
+    out = json.loads(await smod.explain_query("DELETE FROM leads.meritos WHERE id=1"))
+    assert out["success"] is False
+    assert out["espinha_guard"] is True
+    assert out["rota"] == "/api/explain"
+
+
+@pytest.mark.asyncio
 async def test_bypass_por_do_block_e_LOGADO(espiao, caplog):
     """⚠️ O bloco DO e um buraco CONHECIDO e nao fechavel sem matar a medicao.
 
@@ -351,7 +471,38 @@ async def test_bypass_por_do_block_e_LOGADO(espiao, caplog):
     with caplog.at_level(logging.WARNING, logger=qmod.__name__):
         out = await _run("DO $$ BEGIN DELETE FROM leads.meritos; END $$")
     assert out["success"] is True, "o DO deixou de passar — a medicao quebrou junto"
-    assert "buraco conhecido" in "\n".join(r.getMessage() for r in caplog.records)
+    assert "BURACO CONHECIDO" in "\n".join(r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sql,alvo", [
+    # ⛔ nome NU: e o motivo de ESPINHA_SEM_SCHEMA existir, e o log nao via
+    ("DO $$ BEGIN DELETE FROM meritos; END $$", "meritos"),
+    # ⛔ multi-statement: e LITERALMENTE a tecnica que esta guarda existe pra
+    # derrotar, e o log dela era mudo
+    ("INSERT INTO zz (t) VALUES (1); DO $$ BEGIN DELETE FROM leads.meritos; END $$",
+     "leads.meritos"),
+])
+async def test_o_log_do_buraco_ve_as_formas_que_importam(sql, alvo, espiao, caplog):
+    """O predicado do log era `startswith("DO")` + nome qualificado — mudo nas
+    duas formas mais provaveis. Hoje ele e a PROPRIA guarda com o corpo visivel."""
+    with caplog.at_level(logging.WARNING, logger=qmod.__name__):
+        assert (await _run(sql))["success"] is True
+    linha = "\n".join(r.getMessage() for r in caplog.records)
+    assert "BURACO CONHECIDO" in linha
+    assert alvo in linha, "o log do desvio nao nomeia a tabela"
+
+
+@pytest.mark.asyncio
+async def test_medicao_legitima_tambem_e_logada_e_isso_e_esperado(espiao, caplog):
+    """⚠️ O log NAO distingue medicao de desvio — nao ha como (um `RAISE` dentro
+    de um `IF` que nunca roda derrota qualquer heuristica). Ele registra que
+    ALGUEM olhou pra espinha por dentro de um bloco; quem le decide."""
+    with caplog.at_level(logging.WARNING, logger=qmod.__name__):
+        await _run(
+            "DO $$ BEGIN DELETE FROM leads.meritos; RAISE EXCEPTION 'MEDIDA'; END $$"
+        )
+    assert "BURACO CONHECIDO" in "\n".join(r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
