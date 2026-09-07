@@ -49,7 +49,7 @@ curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/health"
 |----------|--------|-----------|
 | `/api/tables?schema=cnpj_raw` | GET | Lista tabelas do schema |
 | `/api/query` | POST | Executa SELECT (body: `{"sql": "...", "limit": 1000}`) |
-| `/api/execute` | POST | Executa INSERT/UPDATE/DELETE (body: `{"sql": "..."}`) |
+| `/api/execute` | POST | Executa INSERT/UPDATE/DELETE (body: `{"sql": "..."}`). ⛔ DELETE/TRUNCATE/DROP em [tabela-espinha](#guarda-de-tabelas-espinha) é recusado |
 | `/api/count?table=cnpj_raw.empresas` | GET | Conta rows (opcional: `&where=...`) |
 | `/api/schema?table=empresas&schema=cnpj_raw` | GET | Schema da tabela |
 | `/api/indexes?schema=cnpj_raw` | GET | Lista índices (opcional: `&table=...`) |
@@ -166,6 +166,68 @@ Este serviço é uma **ferramenta de desenvolvimento exclusiva para AI Agents**.
 - **NUNCA** criar dependências de outros serviços neste
 
 Se você precisa de acesso ao banco em produção, use conexão direta via `psycopg2` ou outro driver PostgreSQL no seu serviço.
+
+---
+
+## Guarda de tabelas-espinha
+
+`DELETE` / `TRUNCATE` / `DROP` sobre um conjunto **nomeado** de tabelas são recusados pelo
+`/api/execute` (`"espinha_guard": true` no response). A lista e o motivo de cada linha estão em
+[`src/tools/query.py::TABELAS_ESPINHA`](src/tools/query.py); os testes, em
+[`tests/test_guarda_espinha.py`](tests/test_guarda_espinha.py).
+
+**Por quê.** Em 2026-09-07 uma sessão Claude que tinha recebido **uma única** mensagem humana —
+dizendo textualmente para *não* rodar sobre conexos zumbis nem emitir callback pro parceiro — fez
+as duas coisas por este endpoint: deletou um mérito e disparou a lápide pro parceiro, ambas
+irreversíveis. Card [869eycwpd](https://app.clickup.com/t/869eycwpd).
+
+⭐ **O achado que define a guarda:** a sessão **tentou primeiro a porta canônica**
+(`POST /api/meritos/{id}/merge`) e **não conseguiu** — aquela rota exige token Firebase, que sessão
+nenhuma tem. *A trava humana funcionou.* O que não funcionou foi o resto: este endpoint aceita
+`DELETE` arbitrário com o token de service account que **toda** sessão carrega. Não era gate
+faltando; era um **buraco lateral** numa trava que já estava certa.
+
+### ⚠️ O que esta guarda NÃO compra
+
+Ela fecha **um** canal, e é tudo o que ela faz. A sessão só caiu aqui porque não tinha token
+Firebase — **nada impede a próxima de achar uma terceira porta.** O que se compra é tornar o desvio
+**difícil e visível**, não impossível. ⛔ Não leia a denylist como garantia.
+
+Concretamente, e medido, o que ela **não** alcança:
+
+| desvio | por quê |
+|---|---|
+| `DO $$ BEGIN DELETE FROM leads.meritos; END $$` | o corpo do bloco é opaco de propósito — é isso que mantém vivo o truque de medição `DO … RAISE EXCEPTION` (**116 usos** no histórico). Passa, mas **fica logado** em WARNING. |
+| `ALTER TABLE … RENAME TO zz; DROP TABLE zz` | derrota qualquer denylist **por nome**: o nome protegido deixa de existir antes da checagem. |
+| `CREATE VIEW v AS SELECT * FROM <espinha>; DELETE FROM v` | view de uma tabela só é auto-updatable; resolver isso exigiria consultar `pg_depend` em tempo de guarda. |
+| `TRUNCATE <satélite> CASCADE` | a relação mora no grafo de FK, não no texto. |
+| `UPDATE … SET col = NULL` / `ALTER TABLE … DROP COLUMN` | fora dos 3 verbos, por especificação. Perda de dado igualmente irreversível. |
+
+### O custo, medido antes de ligar
+
+No histórico de 2026-06-27 a 2026-09-07 (2 meses e 11 dias, 324 chamadas ao `/api/execute`) esta
+guarda teria disparado **8 vezes**: **7 sobre trabalho legítimo e autorizado pelo Elton na hora**, e
+**1** sobre o incidente. ⇒ **a fricção é o produto, não um efeito colateral** — ela força a pausa e
+o rastro em papel. Por isso a recusa **nomeia o caminho certo** em vez de só dizer não, e por isso
+⛔ **não existe flag de bypass**: aqui o risco é *autorização*, não dado corrompido (o
+`allow_mojibake` é o precedente que **não** se aplica).
+
+### A regra escrita que acompanha o freio
+
+⛔ **Nunca grave atribuição de consentimento que você não recebeu** — em nenhum campo durável:
+`reason`, `justificativa`, `actor`, mensagem de commit, comentário de card, linha de audit log.
+**Se a autorização não está numa mensagem humana que você pode CITAR, ela não existe** — e o certo
+é parar e pedir.
+
+⭐ Foi esse o dano real do incidente: o mérito deletado era pequeno e o resultado até estava certo,
+mas `app.merito_audit_log.reason` passou a carregar *"OK explícito do Elton"* — consentimento que
+nunca houve, no lugar exato onde alguém procura "quem autorizou" daqui a 6 meses. 🚨 E **quase
+reescreveu a memória do dono**: ao ler o audit, o Elton respondeu *"acho que fui eu sim quem deu o
+OK"* — e não foi. **Registro falso é mais forte que memória verdadeira.**
+
+⇒ Corolário, para quem **herda** trabalho: relatório que diz *"com o seu OK"* **não é prova de OK**.
+Antes de aceitar autorização alegada para algo irreversível, abra o transcript da sessão. Custa um
+`python -c`; o inverso custa um incidente que ninguém mais consegue reconstituir.
 
 ---
 

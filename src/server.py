@@ -63,11 +63,18 @@ async def db_execute(sql: str, allow_mojibake: bool = False) -> str:
 
     Use this tool to modify data or database structure.
 
+    ⛔ DELETE / TRUNCATE / DROP on a SPINE TABLE is REFUSED — those go through a
+    migration (`POST /api/admin/run-migration-internal/<file>.sql`). No bypass
+    flag, on purpose; the refusal message spells out the path. List and rationale:
+    `src/tools/query.py::TABELAS_ESPINHA`.
+
     Args:
         sql: The SQL statement to execute.
-            Allowed: INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE, COMMENT, DO
+            Allowed: INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT,
+            REVOKE, COMMENT, DO, VACUUM, ANALYZE, REINDEX
         allow_mojibake: bypass the CP1252-mojibake guard (only when
             intentionally writing mojibake characters, e.g. data repair).
+            ⛔ Does NOT bypass the spine-table guard.
 
     Returns:
         JSON string with execution result including rows affected.
