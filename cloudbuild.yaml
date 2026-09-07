@@ -44,6 +44,39 @@ steps:
         import mcp, psycopg2, uvicorn, starlette
         print(f"smoke OK - mcp {mcp.__version__ if hasattr(mcp,'__version__') else '?'}")
 
+  # Gate FAIL-CLOSED 2: a suite roda ANTES do push e do deploy.
+  #
+  # ⛔ Sem este step a guarda de tabelas-espinha (`src/tools/query.py`) nao seria
+  # load-bearing: alguem encurtaria a TABELAS_ESPINHA e a imagem subiria verde,
+  # que e exatamente a classe de falha do card 869eycwpd — protecao que existe no
+  # texto e nao no caminho de deploy. A politica da casa (CLAUDE.md da raiz,
+  # "sem branch protection, a barreira e o DEPLOY-TIME") ja manda: todo cloudbuild
+  # que DEPLOYA roda o gate completo do repo antes. Vermelho aqui = nada sobe e a
+  # revisao anterior segue servindo.
+  #
+  # Roda DENTRO da imagem recem-buildada de proposito: e o unico jeito de testar
+  # contra as MESMAS versoes resolvidas que vao pra producao. Instalar as deps de
+  # novo num `python:3.11-slim` criaria uma 2a resolucao — e o pin `mcp<2` deste
+  # repo e load-bearing justamente porque resolucao divergente ja quebrou o deploy.
+  # As deps de teste sao as unicas que faltam (o Dockerfile so instala as de run).
+  - name: '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/claude-db-tools:${_VERSION}'
+    id: 'gate-testes'
+    entrypoint: bash
+    env:
+      - 'PYTHONPATH=/root/.local/lib/python3.11/site-packages'
+    args:
+      - '-c'
+      - |
+        set -e
+        # ⛔ COM TETO, pela mesma licao do `mcp<2` no requirements.txt: dep de
+        # gate sem teto resolve pra um major novo e o gate quebra sozinho num dia
+        # em que ninguem mexeu no repo — e como o step e fail-closed, isso trava o
+        # DEPLOY, nao so o teste. Verificado em 2026-09-07 com pytest 9.0.1 +
+        # pytest-asyncio 1.3.0.
+        pip install --quiet --no-cache-dir --user 'pytest<10' 'pytest-asyncio<2'
+        cd /workspace
+        python -m pytest tests/ -q
+
   # Push to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
     args:

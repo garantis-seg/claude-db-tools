@@ -40,16 +40,21 @@ Executa operações de escrita (DDL/DML).
 **Parâmetros:**
 - `sql` (obrigatório): Statement SQL
 
-**Operações permitidas:** INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE
+**Operações permitidas:** INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE, COMMENT, DO, VACUUM, ANALYZE, REINDEX
 
 **Retorno:** JSON com rows_affected, execution_time_ms
+
+⛔ **`DELETE`/`TRUNCATE`/`DROP` sobre uma tabela-espinha são RECUSADOS** (`espinha_guard`
+no response) — o caminho é a migration. Ver [Guarda de tabelas-espinha](../README.md#guarda-de-tabelas-espinha)
+no README; a lista vive em `src/tools/query.py::TABELAS_ESPINHA`.
 
 **Exemplos:**
 ```
 db_execute("INSERT INTO my_table (col1) VALUES ('value')")
 db_execute("UPDATE cnpj_raw.empresas SET processed = true WHERE id = 123")
 db_execute("CREATE INDEX idx_name ON table(column)")
-db_execute("DELETE FROM temp_table WHERE created_at < NOW() - INTERVAL '7 days'")
+db_execute("DELETE FROM zz_tmp_scratch WHERE created_at < NOW() - INTERVAL '7 days'")
+db_execute("VACUUM (FULL, ANALYZE) leads.meritos")
 ```
 
 ---
