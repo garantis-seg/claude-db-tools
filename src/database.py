@@ -3,6 +3,7 @@ Database connection management with connection pooling
 """
 import psycopg2
 from psycopg2 import pool
+from psycopg2 import extensions
 from psycopg2.extras import RealDictCursor
 import logging
 from typing import Optional, List, Dict, Any
@@ -75,6 +76,68 @@ def _is_connection_valid(conn) -> bool:
         return False
 
 
+def _devolve_no_estado_em_que_saiu(conn) -> bool:
+    """Poe a conexao de volta no modo de fabrica. False = NAO devolva, feche.
+
+    ⭐ O contrato desta pool e "pegou emprestado, devolve como estava". Quem
+    quebrava era o `autocommit`: `execute_write(autocommit=True)` chama
+    `conn.set_isolation_level(0)` e o `putconn` do psycopg2 NAO desfaz isso —
+    ele so chama `rollback()` quando a transacao NAO esta IDLE, e em AUTOCOMMIT
+    ela ESTA idle. A conexao voltava ligada e o proximo caller herdava o modo,
+    em silencio.
+
+    🚨 O que isso custava (medido 2026-09-08, PostgreSQL 17.4 + psycopg2 2.9.11,
+    pelas rotas de verdade): as portas laterais aceitam multi-statement e so nao
+    PERSISTIAM porque o `putconn` dava rollback numa transacao aberta. Em
+    autocommit nao ha transacao aberta, logo nao ha rollback. Depois de UM
+    `VACUUM`, `query("SELECT 1; INSERT INTO t VALUES (1) -- LIMIT")` gravou de
+    verdade, `query("SELECT 1; UPDATE t SET id=999 -- LIMIT")` tambem, e
+    `count(t, where="1=1; INSERT INTO t VALUES (444)")` tambem — os tres com
+    `success: true` e sem uma linha de log dizendo que escreveram. ⛔ UPDATE e
+    MERGE nao sao cobertos pela guarda de tabelas-espinha: ela fecha o VERBO,
+    e isto reabria o EFEITO por baixo dela.
+    ⚠️ E o gatilho e rotina, nao excecao: a docstring do `execute` ENCORAJA
+    `VACUUM` sobre a espinha.
+
+    ⛔ O reset e `set_isolation_level(DEFAULT)`, NAO `conn.autocommit = False`.
+    Medido: o segundo levanta `ProgrammingError: set_session cannot be used
+    inside a transaction` quando o psycopg2 sabe de uma transacao aberta — e
+    ele quase sempre sabe, porque o `SELECT 1` de `_is_connection_valid` ja
+    abriu uma. O primeiro nao levantou em estado nenhum medido (IDLE, INTRANS,
+    INERROR) e desfaz a transacao pendente por ROLLBACK, nunca por COMMIT
+    (medido: INSERT pendente sumiu, nao foi gravado).
+    ⛔ E o predicado NAO pode ser `conn.isolation_level`: `set_isolation_level(0)`
+    mexe so no eixo `autocommit` e deixa `isolation_level` em None — o
+    "observador obvio" le IGUAL antes e depois do vazamento. Quem denuncia e
+    `conn.autocommit`.
+
+    ⚠️ O caso que reset nenhum resolve: `BEGIN` mandado PELO USUARIO dentro do
+    autocommit — alcancavel hoje, porque `needs_autocommit` procura
+    "CONCURRENTLY" em QUALQUER posicao: `execute("INSERT ...; BEGIN /*
+    CONCURRENTLY */")` responde `success: true` e deixa o backend em `idle in
+    transaction`. O psycopg2 nao sabe dessa transacao, entao nem o reset nem o
+    `rollback()` do proprio putconn a fecham (medido: os dois sao no-op e o
+    backend fica `idle in transaction` para sempre, segurando lock e snapshot).
+    ⇒ conexao que nao da pra PROVAR limpa vai FECHADA. Fechar mata a transacao,
+    e uma conexao nova custa um connect — o preco certo pra pagar aqui.
+    """
+    try:
+        # 99% das conexoes: ninguem mexeu no modo. Duas leituras de atributo,
+        # zero ida ao servidor (medido: 200 toggles = 0 transacoes no
+        # `pg_stat_database`, 10.000 toggles = 322ms).
+        if not conn.autocommit and conn.isolation_level is extensions.ISOLATION_LEVEL_DEFAULT:
+            return True
+        if conn.get_transaction_status() != extensions.TRANSACTION_STATUS_IDLE:
+            return False
+        conn.set_isolation_level(extensions.ISOLATION_LEVEL_DEFAULT)
+        return True
+    except Exception:
+        # ⛔ Isto roda num `finally`: levantar aqui mascararia a excecao do
+        # caller E vazaria a conexao pra fora do pool. Na duvida, descarta.
+        logger.warning("Falha ao normalizar a conexao na devolucao; fechando", exc_info=True)
+        return False
+
+
 @contextmanager
 def get_connection():
     """
@@ -136,7 +199,12 @@ def get_connection():
     finally:
         if conn and _connection_pool:
             try:
-                _connection_pool.putconn(conn)
+                # ⭐ O reset mora AQUI, e nao no ramo do `execute_write` que liga
+                # o modo, porque este e o unico ponto por onde TODA conexao
+                # volta. O raio menor (restaurar no `finally` do proprio
+                # `execute_write`) fica correto ate alguem escrever um 2o
+                # ligador — e o `needs_autocommit` ja tem 2 gatilhos hoje.
+                _connection_pool.putconn(conn, close=not _devolve_no_estado_em_que_saiu(conn))
             except Exception:
                 pass
 

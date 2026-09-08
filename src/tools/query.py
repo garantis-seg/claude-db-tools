@@ -67,6 +67,17 @@ TABELAS_ESPINHA = frozenset({
     "leads.meritos",
     #: 170 linhas. Morre por CASCADE junto com o pai, sem ser citada.
     "leads.merito_membros",
+    #: 54.083 linhas, as ARESTAS do conexo. Entrou em 2026-09-08 (decisao do
+    #: Elton; era a pergunta em aberto da §1 do report da PROMPT M, que a deixou
+    #: de fora por nao ter sido medida). ⭐ O perfil dela e o pior da lista: um
+    #: DELETE aqui nao apaga nada VISIVEL — muda a formacao FUTURA de conexo, em
+    #: silencio. ⚠️ E o "da pra recuperar do raw" e mais fraco do que parece: o
+    #: TTL de 30d de `providers.api_cache` (predictus) conta da BUSCA, nao da
+    #: ARESTA, e as duas datas se afastam — medido no caso-ancora, a busca foi em
+    #: 24/08 e as 108 arestas nasceram dela em 04/09, 11 dias depois, com o raw
+    #: vencendo 19 dias (nao 30) apos a aresta existir. Aresta nascida de um
+    #: cache perto de vencer e irrecuperavel quase de imediato.
+    "leads.processo_relacionamentos",
     #: 1.977.727 linhas. ⛔ O lakehouse NAO cobre: so 20.535 (1,04%) tem espelho
     #: em datalake.judicial_processos. Refazer = re-fetch pago de milhares de USD.
     "leads.processos",
@@ -439,6 +450,12 @@ async def query(sql: str, limit: int = 1000) -> str:
     # o check e ia inteiro pro cursor (medido em 2026-09-07). Hoje o DELETE nao
     # PERSISTE por acidente — o `putconn` do pool dá rollback numa conexao com
     # transacao aberta — e "por acidente" nao e uma garantia que se cita.
+    # ⚠️ E ate 2026-09-08 nem "por acidente" valia: o `autocommit` do VACUUM
+    # vazava pelo pool, e numa conexao herdada em autocommit NAO HA transacao
+    # aberta, logo nao ha rollback — medido, este `INSERT`/`UPDATE` gravava.
+    # O `_devolve_no_estado_em_que_saiu` do `database.py` fechou isso, entao o
+    # rollback voltou a ser o que segura a rota. ⛔ Continua sem ser garantia:
+    # efeito NAO-transacional (setval, pg_advisory_lock) o rollback nunca desfaz.
     recusa = recusa_espinha(sql, "/api/query")
     if recusa:
         return recusa

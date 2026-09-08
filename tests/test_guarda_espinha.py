@@ -73,6 +73,7 @@ async def test_o_statement_do_incidente_e_recusado(espiao):
 ESPERADAS = {
     "leads.meritos",
     "leads.merito_membros",
+    "leads.processo_relacionamentos",
     "leads.processos",
     "app.merito_audit_log",
     "telemetria.provider_cost_ledger",
