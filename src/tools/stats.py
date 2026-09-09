@@ -7,7 +7,7 @@ import re
 import time
 from typing import Optional
 
-from ..database import execute_query, get_connection
+from ..database import execute_query
 from .query import recusa_espinha
 
 logger = logging.getLogger(__name__)
@@ -156,11 +156,16 @@ async def explain_query(sql: str, analyze: bool = True) -> str:
         logger.info(f"Running EXPLAIN on: {sql[:100]}...")
         start_time = time.time()
 
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(full_query)
-            plan_lines = [row[0] for row in cursor.fetchall()]
-            cursor.close()
+        # ⛔ Esta porta NAO monta o proprio caminho ate o cursor: `execute_query`
+        # e o unico freio (`SET statement_timeout` = `settings.query_timeout`), e
+        # `EXPLAIN (ANALYZE, ...)` EXECUTA — sem herdar o teto, uma query pesada
+        # por aqui reproduz o incidente de 2026-07-31. Card 869eypyq3.
+        # ⚠️ O retry `max_retries=2` so dispara em conexao MORTA e nada aqui da
+        # COMMIT: `EXPLAIN ANALYZE <dml>` morre no rollback do `putconn`.
+        # ⚠️ Efeito colateral aceito: `settings.max_rows` trunca plano gigante.
+        # 🚨 `execute_query` usa RealDictCursor: cada linha e um dict com chave
+        # "QUERY PLAN". Ler por indice posicional devolve plano vazio em silencio.
+        plan_lines = [next(iter(row.values())) for row in execute_query(full_query)]
 
         execution_time = time.time() - start_time
 
