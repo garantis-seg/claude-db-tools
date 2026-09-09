@@ -454,9 +454,8 @@ async def test_api_explain_analyze_executa_e_por_isso_e_guardado(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("chegou no banco")
 
-    # ⚠️ Era `get_connection`: a porta pegava conexao crua (e por isso rodava sem
-    # `statement_timeout` — card 869eypyq3). Hoje ela passa por `execute_query`,
-    # que e o mesmo sensor: se a guarda deixar passar, o SQL chega aqui.
+    # ⚠️ Era `get_connection` (conexao crua, sem teto — card 869eypyq3); o sensor
+    # e o mesmo: se a guarda deixar passar, o SQL chega aqui.
     monkeypatch.setattr(smod, "execute_query", boom)
     out = json.loads(await smod.explain_query("DELETE FROM leads.meritos WHERE id=1"))
     assert out["success"] is False

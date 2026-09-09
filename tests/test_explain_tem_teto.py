@@ -54,11 +54,8 @@ _PLANO = [
 class _FakeCursor:
     """Grava todo SQL que chega ao cursor.
 
-    🚨 O shape das linhas depende do `cursor_factory`, e e por isso que este fake
-    nao e cosmetico: `execute_query` usa `RealDictCursor`, entao cada linha e um
-    dict com chave "QUERY PLAN". Ler por indice posicional (`row[0]`, que era o
-    codigo antigo com cursor tuplado) devolve plano VAZIO — ou KeyError engolido
-    pelo `except` — em SILENCIO.
+    🚨 O shape das linhas SEGUE o `cursor_factory` de proposito (ver
+    `test_o_plano_nao_volta_vazio_com_o_cursor_de_dict`).
     """
 
     def __init__(self, registro, dict_rows):
@@ -74,9 +71,6 @@ class _FakeCursor:
         if self._dict_rows:
             return [{"QUERY PLAN": linha} for linha in _PLANO]
         return [(linha,) for linha in _PLANO]
-
-    def fetchall(self):
-        return self._linhas()
 
     def fetchmany(self, size):
         return self._linhas()[:size]
@@ -106,14 +100,8 @@ class _FakeConn:
 
 @pytest.fixture
 def registro(monkeypatch):
-    """Substitui a aquisicao de conexao nos DOIS nomes que a importam.
-
-    ⛔ Patchar so `src.database.get_connection` nao basta: `src/tools/stats.py`
-    importava o nome (`from ..database import get_connection`), e nome importado
-    e uma ligacao PROPRIA do modulo — o patch no modulo de origem nao a alcanca.
-    O `raising=False` e porque o fix APAGA esse import, e o teste tem de rodar
-    verde depois disso.
-    """
+    """Todo SQL que chega ao cursor, na ordem. Patchar `src.database` basta
+    porque a porta so fala com o banco pelos wrappers de la (ultimo teste)."""
     vistos = []
 
     @contextmanager
@@ -121,13 +109,12 @@ def registro(monkeypatch):
         yield _FakeConn(vistos)
 
     monkeypatch.setattr(db, "get_connection", _fake)
-    monkeypatch.setattr(smod, "get_connection", _fake, raising=False)
     return vistos
 
 
 @pytest.mark.asyncio
 async def test_a_porta_do_explain_manda_o_teto_antes_de_executar(registro):
-    """CONTROLE POSITIVO do card: hoje (pre-fix) nenhum `SET` sai por esta porta."""
+    """O teste do card: pre-fix, esta porta nao emitia `SET` nenhum."""
     out = json.loads(await smod.explain_query("SELECT 1", analyze=True))
     assert out["success"] is True, out
 
