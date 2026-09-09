@@ -7,7 +7,7 @@ import re
 import time
 from typing import Optional
 
-from ..database import execute_query, get_connection
+from ..database import execute_query
 from .query import recusa_espinha
 
 logger = logging.getLogger(__name__)
@@ -156,11 +156,30 @@ async def explain_query(sql: str, analyze: bool = True) -> str:
         logger.info(f"Running EXPLAIN on: {sql[:100]}...")
         start_time = time.time()
 
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(full_query)
-            plan_lines = [row[0] for row in cursor.fetchall()]
-            cursor.close()
+        # ⛔ Esta porta NAO monta o proprio caminho ate o cursor. Ela era o unico
+        # `get_connection()` cru fora de `database.py`, e por isso o unico
+        # caminho do servico que nunca mandava `SET statement_timeout` — `EXPLAIN
+        # (ANALYZE, ...)` EXECUTA, entao era o incidente de 2026-07-31 (query
+        # sobrevive ao 504 dos 110s do Cloud Run segurando slot e conexao)
+        # esperando por uma query pesada.
+        # ⚠️ O teto que as vezes aparecia em prod era VAZAMENTO: o `SET` que
+        # `execute_write` commita fica na conexao e o proximo caller herda.
+        # Medido 2026-09-09: staging 8/8 sondas leem "0", prod le "0" na 1a sonda
+        # e "100s" nas 12 seguintes. Teto por sorte de pool nao e teto.
+        # ponytail: `execute_query` ja E o freio (unico lugar, com o
+        # `settings.query_timeout` do config) — herdar custa 2 linhas e fecha a
+        # classe; mover o `SET` pro `get_connection` mexeria no caminho de TODA
+        # conexao, inclusive o do autocommit recem-consertado (PR #7).
+        # ponytail: o `max_retries=2` default fica. A reexecucao so dispara em
+        # conexao MORTA (o EXPLAIN anterior ja nao esta rodando no servidor), e
+        # nenhum caminho daqui da COMMIT — `EXPLAIN ANALYZE <dml>` e desfeito no
+        # rollback do `putconn`, antes e depois deste fix.
+        # ⚠️ Efeito colateral aceito: `settings.max_rows` (10.000) passa a truncar
+        # o plano. Plano com >10k LINHAS de texto ja e ilegivel; o corte e visivel
+        # (some o "Execution Time:" do fim) e nao vale um caminho proprio.
+        # 🚨 `execute_query` usa RealDictCursor: cada linha e um dict com chave
+        # "QUERY PLAN". Ler por indice posicional devolve plano vazio em silencio.
+        plan_lines = [next(iter(row.values())) for row in execute_query(full_query)]
 
         execution_time = time.time() - start_time
 

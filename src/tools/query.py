@@ -7,7 +7,7 @@ import re
 import time
 from typing import Optional
 
-from ..database import execute_query, execute_write, get_connection
+from ..database import execute_query, execute_write
 from ..config import settings
 
 logger = logging.getLogger(__name__)

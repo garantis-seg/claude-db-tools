@@ -8,9 +8,9 @@ Guia completo para configurar o MCP Server no Claude Code.
 
 | Ambiente | URL |
 |----------|-----|
-| Cloud Run | `https://claude-db-tools-34pal47ocq-uc.a.run.app` |
-| Health Check | `https://claude-db-tools-34pal47ocq-uc.a.run.app/health` |
-| SSE Endpoint | `https://claude-db-tools-34pal47ocq-uc.a.run.app/sse` |
+| Cloud Run | `https://claude-db-tools-34pal47ocq-rj.a.run.app` |
+| Health Check | `https://claude-db-tools-34pal47ocq-rj.a.run.app/health` |
+| SSE Endpoint | `https://claude-db-tools-34pal47ocq-rj.a.run.app/sse` |
 
 ---
 
@@ -22,7 +22,7 @@ O servidor ja esta deployado no Cloud Run e conectado ao banco de dados.
 
 ```powershell
 # Adicionar ao Claude Code
-claude mcp add claude-db-tools --transport sse https://claude-db-tools-34pal47ocq-uc.a.run.app/sse
+claude mcp add claude-db-tools --transport sse https://claude-db-tools-34pal47ocq-rj.a.run.app/sse
 ```
 
 ### Verificar Instalacao
@@ -81,7 +81,7 @@ claude mcp add claude-db-tools \
 ### Via Health Check
 
 ```bash
-curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/health" \
+curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/health" \
   -H "Authorization: Bearer $(gcloud auth print-identity-token)"
 ```
 
@@ -120,7 +120,7 @@ A senha do banco nao foi configurada. Isso so acontece no modo local.
 Remova e adicione novamente:
 ```bash
 claude mcp remove claude-db-tools
-claude mcp add claude-db-tools --transport sse https://claude-db-tools-34pal47ocq-uc.a.run.app/sse
+claude mcp add claude-db-tools --transport sse https://claude-db-tools-34pal47ocq-rj.a.run.app/sse
 ```
 
 ---

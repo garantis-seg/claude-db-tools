@@ -8,7 +8,7 @@ Serviço REST API para acesso ao PostgreSQL - Ferramentas para AI Agents (Claude
 
 ### Acesso via REST API
 
-Base URL: `https://claude-db-tools-34pal47ocq-uc.a.run.app`
+Base URL: `https://claude-db-tools-34pal47ocq-rj.a.run.app`
 
 ### Autenticação (IMPORTANTE)
 
@@ -40,7 +40,7 @@ gcloud auth login
 gcloud config set project neqsti
 
 # 3. Testar conexão
-curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/health"
+curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/health"
 ```
 
 ### Endpoints Disponíveis
@@ -62,21 +62,21 @@ curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/health"
 
 ```bash
 # Listar tabelas do schema cnpj_raw
-curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/tables?schema=cnpj_raw" \
+curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/api/tables?schema=cnpj_raw" \
   -H "Authorization: Bearer $(gcloud auth print-identity-token)"
 
 # Executar query
-curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/query" \
+curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/api/query" \
   -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT * FROM cnpj_raw.empresas LIMIT 5"}'
 
 # Contar registros
-curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/count?table=cnpj_raw.empresas" \
+curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/api/count?table=cnpj_raw.empresas" \
   -H "Authorization: Bearer $(gcloud auth print-identity-token)"
 
 # Ver schema de uma tabela
-curl -s "https://claude-db-tools-34pal47ocq-uc.a.run.app/api/schema?table=empresas&schema=cnpj_raw" \
+curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/api/schema?table=empresas&schema=cnpj_raw" \
   -H "Authorization: Bearer $(gcloud auth print-identity-token)"
 ```
 
