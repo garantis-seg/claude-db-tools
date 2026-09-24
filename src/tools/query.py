@@ -101,12 +101,9 @@ TABELAS_ESPINHA = frozenset({
     #: limite de gasto e re-autoriza compra na conta do PARCEIRO (Kelveng, 5
     #: creditos por miss). E exploit ativo, nao perda passiva.
     "telemetria.capa_parqueados_compras",
-    # -- o botao de rollback -----------------------------------------------------
-    #: 244 linhas. O CLAUDE.md da raiz nomeia isto como "o freio e o BOTAO:
-    #: rollback pro safe-state". Retrato congelado de um mundo que ja nao existe:
-    #: nao se re-deriva, nao se re-fetcha, nao se recalcula. Unica da lista cuja
-    #: perda so fica visivel na hora em que ela importa.
-    "leitura_conexos.risk_snapshots_safe_state_prelaunch",
+    # ⚰️ `leitura_conexos.risk_snapshots_safe_state_prelaunch` (o "BOTAO" de rollback)
+    # SAIU em 2026-09-24: inerte desde o reset de conexos de 28/08 e dropada pela mig
+    # 20260924_1600 do execucao-fiscal (decisao Elton).
 })
 # ⛔ MEDIDO e REFUTADO em 2026-09-07 — nao re-adicione sem re-medir:
 #   · `providers.*_jobs` (o ponto de partida do card): os 3 por-provider sao VIEWS

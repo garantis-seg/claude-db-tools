@@ -79,7 +79,6 @@ ESPERADAS = {
     "telemetria.provider_cost_ledger",
     "telemetria.autos_tentativas",
     "telemetria.capa_parqueados_compras",
-    "leitura_conexos.risk_snapshots_safe_state_prelaunch",
 }
 
 
