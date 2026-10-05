@@ -402,6 +402,145 @@ def espinha_error(verbo: str, alvo: str) -> str:
     ).format(verbo=verbo, alvo=alvo, lista=", ".join(sorted(TABELAS_ESPINHA)))
 
 
+# ---------------------------------------------------------------------------
+# Guarda de MANUTENCAO QUE TRAVA.
+#
+# O criterio da casa para "isto vai por migration" e "TRAVA TABELA QUENTE?", nao
+# "muda dado?". VACUUM FULL e CLUSTER reescrevem a tabela sob ACCESS EXCLUSIVE;
+# REINDEX sem CONCURRENTLY pega ACCESS EXCLUSIVE no indice, e toda query sobre a
+# tabela espera por ele no planejamento. Nenhum dos tres perde uma linha, e os
+# tres tiram a tabela do ar pela duracao inteira — com a fila de lock que se forma
+# atras deles segurando tambem quem chega depois. A migration do fe-api tem review
+# e o `lock_timeout` do runner, que troca essa fila por um erro retentavel.
+#
+# Seguem liberados, porque nao bloqueiam leitura nem escrita: VACUUM sem FULL,
+# ANALYZE e REINDEX ... CONCURRENTLY.
+#
+# ⛔ Sem flag de bypass, como a espinha: quem precisa travar escreve a migration.
+# ⚠️ Fora do alcance, de proposito: o corpo de `DO`/funcao em `$$...$$` (opaco
+# pelo mesmo motivo da espinha — e o que mantem vivo o truque de medicao; como la,
+# o `execute` so LOGA o `BURACO CONHECIDO`) e a DDL que
+# reescreve tabela (ALTER TABLE ... SET TABLESPACE / ALTER COLUMN TYPE). Esta
+# guarda e de MANUTENCAO; se a DDL entrar, e a lista de comandos que cresce.
+# ---------------------------------------------------------------------------
+#: Sem parenteses o FULL e obrigatoriamente a 1a palavra depois do VACUUM
+#: (`VACUUM [FULL] [FREEZE] [VERBOSE] [ANALYZE] ...`).
+_VACUUM_FULL = re.compile(r"^\s*VACUUM\s+FULL\b", re.I)
+#: Com parenteses, FULL e opcao em qualquer posicao da lista e aceita valor:
+#: `(FULL)` e `(ANALYZE, FULL true)` ligam, `FULL false|off|0` SEM aspas desliga.
+#: Com aspas (`FULL 'off'`) o valor chega mascarado e a guarda recusa: direcao
+#: segura, e a mensagem aponta o VACUUM sem FULL. O nome citado (`"full"`) liga —
+#: o PG o le como identificador.
+_VACUUM_OPCOES = re.compile(r"^\s*VACUUM\s*\(([^)]*)\)", re.I)
+_FULL_LIGADO = re.compile(r'(?:^|,)\s*"?FULL\b"?(?!\s*(?:FALSE|OFF|0)\b)', re.I)
+_REINDEX = re.compile(r"^\s*REINDEX\b", re.I)
+#: `REINDEX [(opcoes)] {INDEX|TABLE|SCHEMA|DATABASE|SYSTEM} CONCURRENTLY nome`.
+#: ⛔ So a posicao canonica libera. Na lista de opcoes o CONCURRENTLY aceita valor
+#: (`(CONCURRENTLY false)`, `(CONCURRENTLY 'off')` — e a string chega aqui ja
+#: mascarada), entao achar a palavra em qualquer posicao liberava o REINDEX que
+#: trava. A forma de opcao inteira cai junto, inclusive a que nao trava
+#: (`(CONCURRENTLY)`, `(CONCURRENTLY true)`): recusa a mais, nunca lock a mais, e
+#: a mensagem aponta a forma canonica.
+_REINDEX_CONCORRENTE = re.compile(
+    r"^\s*REINDEX\s*(?:\([^)]*\)\s*)?(?:INDEX|TABLE|SCHEMA|DATABASE|SYSTEM)\s+CONCURRENTLY\b",
+    re.I,
+)
+#: Toda forma de CLUSTER trava: com alvo, a tabela; sem alvo, cada tabela ja
+#: clusterizada, uma por vez.
+_CLUSTER = re.compile(r"^\s*CLUSTER\b", re.I)
+
+
+def _trava(statement: str):
+    """O comando que trava, se o statement for um; senao None."""
+    opcoes = _VACUUM_OPCOES.match(statement)
+    if _VACUUM_FULL.match(statement) or (opcoes and _FULL_LIGADO.search(opcoes.group(1))):
+        return "VACUUM FULL"
+    if _REINDEX.match(statement) and not _REINDEX_CONCORRENTE.match(statement):
+        return "REINDEX"
+    if _CLUSTER.match(statement):
+        return "CLUSTER"
+    return None
+
+
+def _manutencao_que_trava(sql: str, dentro_do_bloco: bool = False):
+    """O 1o comando de manutencao que trava, em QUALQUER statement do corpo, ou None.
+
+    Olha cada statement, nao so o lider: em `ANALYZE t; VACUUM FULL t` o lider e
+    liberado. O texto e o de `_mascara`, entao comentario e string literal nao
+    escondem nem inventam comando: `/* x */ VACUUM FULL t` trava, `REINDEX TABLE t
+    /* CONCURRENTLY */` tambem, e `INSERT ... VALUES ('VACUUM FULL')` nao.
+
+    `dentro_do_bloco=True` deixa o corpo do `$tag$` visivel e so serve ao log do
+    buraco conhecido (⛔ nunca pra DECIDIR, como na espinha). La dentro o comando
+    nao abre o statement, entao ele tambem e cortado no `$tag$` e depois de
+    BEGIN/THEN/LOOP/ELSE.
+    ponytail: `EXECUTE 'CLUSTER t'` segue invisivel (a string e mascarada); o log
+    e visibilidade, nao guarda.
+    """
+    mascarado, aberto = _mascara(sql, dollar=not dentro_do_bloco)
+    statements = mascarado.split(";")
+    if dentro_do_bloco:
+        statements = [p for s in statements
+                      for p in re.split(r"\$\w*\$|\b(?:BEGIN|THEN|LOOP|ELSE)\b", s, flags=re.I)]
+    for statement in statements:
+        comando = _trava(statement)
+        if comando:
+            return comando
+    # A mesma rede da espinha: lexer que terminou com literal aberto pode ter
+    # mascarado um statement que o PG executa, entao a decisao volta pro texto
+    # CRU, cortado antes de cada palavra-chave. Errar aqui custa uma recusa a
+    # explicar, num SQL que o PG provavelmente recusaria de qualquer jeito.
+    if aberto:
+        for pedaco in re.split(r"(?=\b(?:VACUUM|REINDEX|CLUSTER)\b)", sql, flags=re.I):
+            comando = _trava(pedaco)
+            if comando:
+                return comando + " (SQL nao parseavel)"
+    return None
+
+
+def recusa_manutencao(sql: str, rota: str):
+    """Roda a guarda de manutencao e devolve o JSON de recusa, ou None se pode seguir."""
+    comando = _manutencao_que_trava(sql)
+    if not comando:
+        return None
+    logger.warning(
+        "manutencao_guard: RECUSADO %s via %s | sql=%r", comando, rota, sql[:4000]
+    )
+    return json.dumps({
+        "success": False,
+        "manutencao_guard": True,
+        "comando": comando,
+        "rota": rota,
+        "error": MANUTENCAO_ERROR.format(comando=comando),
+    })
+
+
+MANUTENCAO_ERROR = (
+    "SQL recusado pela guarda de manutencao: `{comando}` trava a tabela.\n"
+    "\n"
+    "VACUUM FULL e CLUSTER reescrevem a tabela sob ACCESS EXCLUSIVE; REINDEX sem "
+    "CONCURRENTLY pega ACCESS EXCLUSIVE no indice, e toda query sobre a tabela "
+    "espera por ele no planejamento. Nao perdem linha, mas praticamente nenhuma "
+    "query passa enquanto rodam, e a fila de lock que se forma atras deles segura "
+    "tambem quem chega depois. Nao ha flag pra pular esta guarda.\n"
+    "\n"
+    "Se o trabalho nao exige travar, a forma que nao trava esta liberada aqui:\n"
+    "  - `VACUUM` / `VACUUM (ANALYZE)`, sem FULL: limpa sem bloquear leitura nem "
+    "escrita (mas em geral nao devolve espaco ao disco);\n"
+    "  - `REINDEX INDEX CONCURRENTLY <indice>` / `REINDEX TABLE CONCURRENTLY "
+    "<tabela>`: o CONCURRENTLY vale logo depois de INDEX/TABLE/SCHEMA/DATABASE, "
+    "nao na lista de opcoes entre parenteses.\n"
+    "\n"
+    "Se precisa travar, o caminho e uma migration do frontend-api (repo "
+    "execucao-fiscal), que tem review e o lock_timeout do runner:\n"
+    "  1. escreva `frontend-api/migrations/<AAAAMMDD_HHMM>_<nome>.sql`. VACUUM nao "
+    "roda em bloco de transacao: deixe-o SOZINHO no arquivo e declare "
+    "`-- deploy-gate: autocommit` no header;\n"
+    "  2. mergeie o PR: o deploy aplica a migration pelo `run-migration-internal`.\n"
+    "Passo a passo: skill `deploy-e-migrations-fe-api`."
+)
+
+
 MOJIBAKE_ERROR = (
     "SQL rejected: it contains a UTF-8-read-as-CP1252 mojibake signature "
     "(lead byte + continuation digraph, e.g. the corrupted forms of accented "
@@ -453,7 +592,7 @@ async def query(sql: str, limit: int = 1000) -> str:
     # O `_devolve_no_estado_em_que_saiu` do `database.py` fechou isso, entao o
     # rollback voltou a ser o que segura a rota. ⛔ Continua sem ser garantia:
     # efeito NAO-transacional (setval, pg_advisory_lock) o rollback nunca desfaz.
-    recusa = recusa_espinha(sql, "/api/query")
+    recusa = recusa_espinha(sql, "/api/query") or recusa_manutencao(sql, "/api/query")
     if recusa:
         return recusa
 
@@ -500,6 +639,11 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
     data mutation — it gets a ledger, a rollback header and PR review. There is no
     bypass flag, on purpose. The refusal message names the exact path to take.
 
+    ⛔ VACUUM FULL, REINDEX without CONCURRENTLY and CLUSTER are REFUSED too
+    (`manutencao_guard`): they lose no row, but hold the table for their whole
+    run. Use the form that does not lock (VACUUM without FULL, REINDEX ...
+    CONCURRENTLY) or a migration. No bypass flag either.
+
     Args:
         sql: The SQL statement to execute. Must be a write operation.
             Allowed: INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT,
@@ -516,19 +660,24 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
         - execute("UPDATE cnpj_raw.empresas SET processed = true WHERE id = 123")
         - execute("CREATE INDEX idx_name ON cnpj_raw.empresas(razao_social)")
         - execute("DELETE FROM zz_tmp_scratch WHERE created_at < NOW() - INTERVAL '7 days'")
-        - execute("VACUUM (FULL, ANALYZE) leads.meritos")   # manutencao, nao perde linha
+        - execute("VACUUM (ANALYZE) leads.meritos")   # manutencao que nao trava
+        - execute("REINDEX INDEX CONCURRENTLY cnpj_raw.idx_name")
     """
+    # ⛔ ANTES do allowlist, e sem depender dele: o allowlist olha so o 1o verbo do
+    # texto cru, entao `-- x\nVACUUM FULL t` cairia no "Only write operations" e a
+    # regra so apareceria na 2a tentativa. E CLUSTER nem esta no allowlist — quem
+    # o acrescentar nao abre a porta por isso.
+    recusa = recusa_manutencao(sql, "/api/execute")
+    if recusa:
+        return recusa
+
     sql_upper = sql.strip().upper()
 
-    # VACUUM / ANALYZE / REINDEX entraram em 2026-08-15: sao MANUTENCAO, nao
-    # escrita de dado — nenhum deles pode perder linha. Ate aqui o unico jeito de
-    # rodar VACUUM FULL em prod era escrever uma migration de um statement so e
-    # chamar `run-migration-internal?autocommit=true`, o que polui o ledger de
-    # `app.schema_migrations` (que existe pra mudanca de SCHEMA) com manutencao
-    # que se repete. E ela SE REPETE: bloat volta.
-    # Contexto: 2 design docs do execucao-fiscal ja adiaram esse reclaim
-    # ("physical reclaim needs VACUUM FULL/pg_repack — plan the reclaim window",
-    # D1 detriplication 2026-07-04 e canonical_conflict_retention).
+    # VACUUM / ANALYZE / REINDEX estao aqui porque manutencao recorrente nao cabe
+    # no ledger de `app.schema_migrations`, que existe pra mudanca de SCHEMA — e
+    # bloat volta. So chega aqui a manutencao que NAO trava a tabela: a que trava
+    # (VACUUM FULL, REINDEX sem CONCURRENTLY, CLUSTER) foi recusada acima e vai por
+    # migration, porque o criterio e "trava tabela quente?", nao "muda dado?".
     allowed_operations = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE',
                           'GRANT', 'REVOKE', 'COMMENT', 'DO', 'VACUUM', 'ANALYZE', 'REINDEX']
 
@@ -566,6 +715,14 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
             "(DO/FUNCTION); NAO recusado, ver query.py | sql=%r",
             oculto[0], oculto[1], sql[:4000],
         )
+    # O mesmo buraco vale pra guarda de manutencao: REINDEX e CLUSTER rodam dentro
+    # de plpgsql e seguram o lock pela reconstrucao inteira, mesmo com RAISE no fim.
+    oculto = _manutencao_que_trava(sql, dentro_do_bloco=True)
+    if oculto:
+        logger.warning(
+            "manutencao_guard: BURACO CONHECIDO — %s dentro de bloco $tag$ "
+            "(DO/FUNCTION); NAO recusado, ver query.py | sql=%r", oculto, sql[:4000],
+        )
 
     if not allow_mojibake and MOJIBAKE_SIG.search(sql):
         logger.warning(f"Mojibake guard rejected statement: {sql[:120]!r}")
@@ -582,8 +739,9 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
     # VACUUM seria aceito pelo allowlist e morreria em
     # "VACUUM cannot run inside a transaction block" — pior que estar bloqueado,
     # porque parece bug do banco.
-    # ⛔ ANALYZE e REINDEX (sem CONCURRENTLY) RODAM em transacao e NAO entram —
-    # por-los aqui trocaria o rollback-em-erro deles por escrita solta.
+    # ⛔ ANALYZE RODA em transacao e NAO entra — po-lo aqui trocaria o
+    # rollback-em-erro dele por escrita solta. (O REINDEX que chega aqui e o
+    # CONCURRENTLY, que entra pelo outro gatilho.)
     needs_autocommit = "CONCURRENTLY" in sql_upper or sql_upper.startswith("VACUUM")
 
     try:
@@ -634,7 +792,7 @@ async def count(table: str, where: Optional[str] = None) -> str:
 
         # ⛔ `table` e `where` sao concatenados CRUS (e por GET). A guarda roda
         # sobre o SQL ja montado, que e o texto que chega no cursor.
-        recusa = recusa_espinha(sql, "/api/count")
+        recusa = recusa_espinha(sql, "/api/count") or recusa_manutencao(sql, "/api/count")
         if recusa:
             return recusa
 

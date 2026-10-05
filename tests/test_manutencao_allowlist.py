@@ -1,14 +1,9 @@
-"""VACUUM / ANALYZE / REINDEX no allowlist do `execute` (2026-08-15).
+"""VACUUM / ANALYZE / REINDEX no allowlist do `execute`: o que entra e em que modo.
 
-Ate aqui o unico jeito de rodar VACUUM FULL em prod era escrever uma migration
-de um statement so e chamar `run-migration-internal?autocommit=true` no fe-api —
-o que poe manutencao RECORRENTE no ledger de `app.schema_migrations`, que existe
-pra mudanca de SCHEMA. E ela recorre: bloat volta.
-
-O que motivou: censo do banco em 2026-08-15 achou 6 tabelas com ~2,9 GB de
-arquivo pra ~20 MB de dado real (`leads.meritos` = 642 kB de dado num arquivo de
-428 MB, fator 682x). Dois design docs do execucao-fiscal ja tinham adiado esse
-reclaim nomeando a ferramenta que faltava.
+Manutencao recorrente nao cabe no ledger de `app.schema_migrations`, que existe
+pra mudanca de SCHEMA — e bloat volta. Por isso ela roda aqui. Mas so a que NAO
+trava a tabela: VACUUM FULL, REINDEX sem CONCURRENTLY e CLUSTER sao recusados
+antes do allowlist e vao por migration (`test_guarda_manutencao.py`).
 
 ⚠️ Estes testes NAO tocam o banco de proposito — eles trocam `execute_write` por
 um espiao. O que se guarda aqui e a DECISAO (aceita? com autocommit?), nao o
@@ -46,9 +41,9 @@ async def _run(sql):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sql", [
-    "VACUUM (FULL, ANALYZE) leads.meritos",
+    "VACUUM (ANALYZE) leads.meritos",
     "ANALYZE leads.meritos",
-    "REINDEX TABLE leads.meritos",
+    "REINDEX TABLE CONCURRENTLY leads.meritos",
 ])
 async def test_manutencao_e_aceita(sql, espiao):
     assert (await _run(sql))["success"] is True, f"{sql} foi recusado pelo allowlist"
@@ -63,27 +58,31 @@ async def test_vacuum_vai_com_autocommit(espiao):
     "VACUUM cannot run inside a transaction block", que parece bug do banco e
     nao configuracao da ferramenta.
     """
-    await _run("VACUUM (FULL, ANALYZE) leads.meritos")
+    await _run("VACUUM (ANALYZE) leads.meritos")
     assert espiao[-1]["autocommit"] is True
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("sql", ["ANALYZE leads.meritos", "REINDEX TABLE leads.meritos"])
-async def test_analyze_e_reindex_seguem_em_transacao(sql, espiao):
-    """⛔ Contra-exemplo: os dois RODAM em transacao e devem continuar assim.
+async def test_analyze_segue_em_transacao(espiao):
+    """⛔ Contra-exemplo: ANALYZE RODA em transacao e deve continuar assim.
 
-    Marca-los como autocommit trocaria o rollback-em-erro deles por escrita
-    solta. Sem este teste, alargar o predicado pra `startswith(("VACUUM",
-    "ANALYZE", "REINDEX"))` — que parece mais 'consistente' — passaria verde.
+    Marca-lo como autocommit trocaria o rollback-em-erro dele por escrita solta.
+    Sem este teste, alargar o predicado pra `startswith(("VACUUM", "ANALYZE"))`
+    — que parece mais 'consistente' — passaria verde.
     """
-    await _run(sql)
+    await _run("ANALYZE leads.meritos")
     assert espiao[-1]["autocommit"] is False
 
 
 @pytest.mark.asyncio
-async def test_concurrently_continua_com_autocommit(espiao):
+@pytest.mark.parametrize("sql", [
+    "CREATE INDEX CONCURRENTLY ix_teste ON leads.meritos (id)",
+    # o unico REINDEX que passa a guarda, e o PG tambem o proibe em transacao
+    "REINDEX INDEX CONCURRENTLY leads.ix_teste",
+])
+async def test_concurrently_continua_com_autocommit(sql, espiao):
     """A razao ORIGINAL do autocommit nao pode ter sido perdida na mudanca."""
-    await _run("CREATE INDEX CONCURRENTLY ix_teste ON leads.meritos (id)")
+    await _run(sql)
     assert espiao[-1]["autocommit"] is True
 
 
