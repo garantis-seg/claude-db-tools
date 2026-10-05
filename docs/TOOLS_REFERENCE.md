@@ -1,246 +1,141 @@
-# Referência de Tools
+# Referência das operações
 
-Documentação completa de todas as tools disponíveis no claude-db-tools.
+Cada operação existe como tool MCP e como rota REST, com os mesmos parâmetros e os mesmos defaults. As duas portas são registradas em `src/server.py` (as tools com `@mcp.tool()`, as rotas em `run_http_server`), e a implementação mora em `src/tools/`.
+
+⛔ É ferramenta de desenvolvimento: nada de produção depende destas operações (ver o [README](../README.md)).
+
+| Tool MCP | Rota REST | O que faz |
+|---|---|---|
+| `db_query` | `POST /api/query` | SELECT |
+| `db_execute` | `POST /api/execute` | escrita: DML, DDL e manutenção |
+| `db_count` | `GET /api/count` | conta linhas |
+| `db_list_tables` | `GET /api/tables` | lista as tabelas de um schema |
+| `db_get_schema` | `GET /api/schema` | colunas de uma tabela |
+| `db_get_indexes` | `GET /api/indexes` | índices de uma tabela ou de um schema |
+| `db_get_stats` | `GET /api/stats` | estatísticas de uma tabela |
+| `db_explain` | `POST /api/explain` | plano de execução |
+| `db_get_sample` | `GET /api/sample` | amostra de linhas |
+| `db_health` | `GET /health` | conexão com o banco (a rota REST responde em outro formato) |
+
+Na REST, os parâmetros vão no corpo JSON (POST) ou na query string (GET), com o nome que têm na tool.
+
+- ⚠️ Passe sempre o `schema`: o default de várias operações é `public`, que está vazio de propósito.
+- ⛔ `DELETE`, `TRUNCATE` e `DROP` sobre tabela-espinha são recusados em `db_query`, `db_execute`, `db_count` e `db_explain` (`espinha_guard: true` na resposta), e a recusa diz o caminho certo: a migration. A lista, o porquê e os limites da guarda: [README](../README.md#guarda-de-tabelas-espinha).
 
 ---
 
-## AVISO IMPORTANTE
+## Leitura
 
-Estas tools são **exclusivamente para uso do Claude Code** em tarefas de desenvolvimento e debugging.
+### db_query — `POST /api/query`
 
-**NUNCA** crie serviços ou código de produção que dependam destas tools.
+Executa um SELECT.
 
----
+- `sql` (obrigatório): começa por `SELECT` ou `WITH`; comentário no topo do texto é recusado.
+- `limit` (opcional): máximo de linhas (default 1000).
 
-## Query Tools
+**Retorno:** `success`, `rows`, `columns`, `data`, `execution_time_ms`.
 
-### db_query
+⚠️ **A resposta corta em silêncio.** Sem `LIMIT` no texto, a tool acrescenta `LIMIT <limit>`; com ou sem ele, a leitura para no teto `max_rows`. Nenhum campo avisa que cortou: para contar, agregue no servidor (`count(*)`), e ao paginar confira o total contra um `count(*)` na mesma rodada.
 
-Executa queries SELECT.
-
-**Parâmetros:**
-- `sql` (obrigatório): Query SQL (SELECT ou WITH)
-- `limit` (opcional): Máximo de rows (default: 1000, max: 10000)
-
-**Retorno:** JSON com columns, data, rows, execution_time_ms
-
-**Exemplos:**
 ```
-db_query("SELECT * FROM cnpj_raw.empresas LIMIT 10")
 db_query("SELECT cnpj_basico, razao_social FROM cnpj_raw.empresas WHERE razao_social ILIKE '%petrobras%'")
-db_query("SELECT COUNT(*) FROM cnpj_raw.estabelecimentos", limit=1)
 ```
 
----
+### db_count — `GET /api/count`
 
-### db_execute
+- `table` (obrigatório): `schema.tabela`.
+- `where` (opcional): a cláusula sem a palavra `WHERE`, concatenada crua no SQL.
 
-Executa operações de escrita (DDL/DML).
+**Retorno:** `success`, `table`, `count`, `where`, `execution_time_ms`.
 
-**Parâmetros:**
-- `sql` (obrigatório): Statement SQL
+É um `COUNT(*)` exato: em tabela grande pode estourar o timeout. A estimativa barata é o `estimated_rows` do `db_list_tables`.
 
-**Operações permitidas:** INSERT, UPDATE, DELETE, CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE, COMMENT, DO, VACUUM, ANALYZE, REINDEX
-
-**Retorno:** JSON com rows_affected, execution_time_ms
-
-⛔ **`DELETE`/`TRUNCATE`/`DROP` sobre uma tabela-espinha são RECUSADOS** (`espinha_guard`
-no response) — o caminho é a migration. Ver [Guarda de tabelas-espinha](../README.md#guarda-de-tabelas-espinha)
-no README; a lista vive em `src/tools/query.py::TABELAS_ESPINHA`.
-
-**Exemplos:**
 ```
-db_execute("INSERT INTO my_table (col1) VALUES ('value')")
-db_execute("UPDATE cnpj_raw.empresas SET processed = true WHERE id = 123")
-db_execute("CREATE INDEX idx_name ON table(column)")
-db_execute("DELETE FROM zz_tmp_scratch WHERE created_at < NOW() - INTERVAL '7 days'")
-db_execute("VACUUM (FULL, ANALYZE) leads.meritos")
-```
-
----
-
-### db_count
-
-Conta rows em uma tabela.
-
-**Parâmetros:**
-- `table` (obrigatório): Nome completo da tabela (schema.tabela)
-- `where` (opcional): Cláusula WHERE sem a palavra WHERE
-
-**Retorno:** JSON com count, execution_time_ms
-
-**Exemplos:**
-```
-db_count("cnpj_raw.empresas")
 db_count("cnpj_raw.estabelecimentos", "situacao_cadastral = '02'")
-db_count("public.users", "active = true AND created_at > '2024-01-01'")
+```
+
+### db_list_tables — `GET /api/tables`
+
+- `schema` (opcional, default `public`).
+
+**Retorno:** `success`, `schema`, `total_tables` e, por tabela, `table_name`, `size`, `estimated_rows`, `estimated_rows_as_of` e `live_tup_since_stats_reset`.
+
+O `estimated_rows` vem do `pg_class.reltuples`, que sobrevive a um restart do cluster e vale até o último analyze (`estimated_rows_as_of`). O `live_tup_since_stats_reset` é contador do coletor de estatísticas e zera quando o cluster perde as estatísticas (num crash, por exemplo): ⛔ não o use para provar que uma tabela está vazia.
+
+### db_get_schema — `GET /api/schema`
+
+- `table` (obrigatório): o nome sem o schema.
+- `schema` (opcional, default `public`).
+
+**Retorno:** `success`, `full_name`, `row_count` e `columns` (`name`, `type`, `nullable`, `default`, `max_length`).
+
+O `row_count` é um `COUNT(*)` exato: em tabela grande, a chamada pode estourar o timeout.
+
+### db_get_indexes — `GET /api/indexes`
+
+- `table` (opcional): filtra por tabela.
+- `schema` (opcional, default `cnpj_raw`).
+
+**Retorno:** `success`, `schema`, `table`, `total_indexes` e, por índice, `table_name`, `index_name`, `size`, `index_type` e `definition`.
+
+### db_get_stats — `GET /api/stats`
+
+- `table` (obrigatório): o nome sem o schema.
+- `schema` (opcional, default `cnpj_raw`).
+
+**Retorno:** `success`, `full_name`, `row_count` (um `COUNT(*)` exato), `estimated_live_rows`, `dead_rows`, `modifications_since_analyze`, `size` (`total`, `table`, `indexes`) e `maintenance` (último vacuum e último analyze, manual e automático).
+
+`estimated_live_rows`, `dead_rows` e `modifications_since_analyze` são contadores do coletor de estatísticas: zeram quando o cluster perde as estatísticas.
+
+### db_explain — `POST /api/explain`
+
+- `sql` (obrigatório).
+- `analyze` (opcional, default `true`).
+
+**Retorno:** `success`, `analyzed`, `query`, `plan` (as linhas do plano) e `timing` (`planning_time_ms`, `execution_time_ms`, `total_time_ms`).
+
+⚠️ Com `analyze` (o default), o Postgres **executa** o comando, DML inclusive. Nada é commitado, mas efeito não transacional (sequência, advisory lock) fica. Para ver só o plano, `analyze=false`.
+
+### db_get_sample — `GET /api/sample`
+
+- `table` (obrigatório): o nome sem o schema.
+- `schema` (opcional, default `public`).
+- `limit` (opcional, default 10, teto 100).
+
+**Retorno:** `success`, `full_name`, `rows_returned`, `columns`, `data`.
+
+### db_health — `GET /health`
+
+Sem parâmetros. A tool devolve `success`, `status` e `database_connected`; a rota REST, `status`, `database` e `version`.
+
+---
+
+## Escrita
+
+### db_execute — `POST /api/execute`
+
+- `sql` (obrigatório): começa por um dos verbos de `allowed_operations` em `src/tools/query.py::execute` (DML, DDL, `DO` e a manutenção `VACUUM`, `ANALYZE` e `REINDEX`).
+- `allow_mojibake` (opcional, default `false`): libera SQL com a assinatura de mojibake, só para reparo de dado. Não libera a guarda de tabelas-espinha.
+
+**Retorno:** `success`, `rows_affected`, `execution_time_ms`, `message`.
+
+- ⛔ SQL com a assinatura de mojibake (texto UTF-8 relido como CP1252 no cliente) é recusado (`mojibake_guard: true`): componha o não-ASCII com `chr(NNN)`, ou mande o SQL por um cliente com UTF-8 explícito.
+- ⛔ `DELETE`, `TRUNCATE` e `DROP` sobre tabela-espinha são recusados (`espinha_guard: true`).
+- `VACUUM` e todo comando com `CONCURRENTLY` rodam em autocommit; o resto roda numa transação, desfeita se der erro.
+- ⚠️ `VACUUM FULL` e `REINDEX` sem `CONCURRENTLY` bloqueiam a tabela enquanto rodam: em tabela quente, vão por migration.
+
+```
+db_execute("INSERT INTO zz_tmp_scratch (col1) VALUES ('valor')")
+db_execute("CREATE INDEX CONCURRENTLY idx_nome ON schema.tabela (coluna)")
+db_execute("VACUUM (ANALYZE) leads.meritos")
 ```
 
 ---
 
-## Schema Tools
+## Erros
 
-### db_list_tables
+Toda resposta das operações traz `success` e, na falha, `error` com a mensagem. A REST responde 400, só com `error`, quando falta parâmetro obrigatório.
 
-Lista tabelas de um schema.
+## Limites
 
-**Parâmetros:**
-- `schema` (opcional): Nome do schema (default: "public")
-
-**Retorno:** JSON com lista de tabelas (nome, size, estimated_rows)
-
-**Exemplos:**
-```
-db_list_tables()                # public schema
-db_list_tables("cnpj_raw")      # cnpj_raw schema
-```
-
----
-
-### db_get_schema
-
-Mostra estrutura de uma tabela.
-
-**Parâmetros:**
-- `table` (obrigatório): Nome da tabela (sem schema)
-- `schema` (opcional): Nome do schema (default: "public")
-
-**Retorno:** JSON com colunas (nome, tipo, nullable, default)
-
-**Exemplos:**
-```
-db_get_schema("empresas", "cnpj_raw")
-db_get_schema("users")
-db_get_schema("estabelecimentos", "cnpj_raw")
-```
-
----
-
-### db_get_indexes
-
-Lista índices de uma tabela ou schema.
-
-**Parâmetros:**
-- `table` (opcional): Nome da tabela para filtrar
-- `schema` (opcional): Nome do schema (default: "cnpj_raw")
-
-**Retorno:** JSON com índices (nome, tabela, tipo, size)
-
-**Exemplos:**
-```
-db_get_indexes()                          # Todos do cnpj_raw
-db_get_indexes("empresas")                # Só da tabela empresas
-db_get_indexes(schema="public")           # Todos do public
-```
-
----
-
-## Stats Tools
-
-### db_get_stats
-
-Estatísticas detalhadas de uma tabela.
-
-**Parâmetros:**
-- `table` (obrigatório): Nome da tabela (sem schema)
-- `schema` (opcional): Nome do schema (default: "cnpj_raw")
-
-**Retorno:** JSON com row_count, dead_rows, size, last_vacuum, last_analyze
-
-**Exemplos:**
-```
-db_get_stats("empresas")
-db_get_stats("estabelecimentos")
-db_get_stats("users", "public")
-```
-
----
-
-### db_explain
-
-Analisa performance de uma query com EXPLAIN ANALYZE.
-
-**Parâmetros:**
-- `sql` (obrigatório): Query SQL para analisar
-- `analyze` (opcional): Se deve executar a query (default: true)
-
-**Retorno:** JSON com query_plan, planning_time_ms, execution_time_ms
-
-**Exemplos:**
-```
-db_explain("SELECT * FROM cnpj_raw.empresas WHERE razao_social ILIKE '%petrobras%'")
-db_explain("SELECT * FROM large_table", analyze=false)  # Só plano, sem executar
-```
-
----
-
-## Sample Tools
-
-### db_get_sample
-
-Amostra de dados de uma tabela.
-
-**Parâmetros:**
-- `table` (obrigatório): Nome da tabela (sem schema)
-- `schema` (opcional): Nome do schema (default: "public")
-- `limit` (opcional): Número de rows (default: 10, max: 100)
-
-**Retorno:** JSON com columns, data
-
-**Exemplos:**
-```
-db_get_sample("empresas", "cnpj_raw")
-db_get_sample("users", limit=5)
-db_get_sample("estabelecimentos", "cnpj_raw", 50)
-```
-
----
-
-## Health Tool
-
-### db_health
-
-Verifica saúde da conexão com o banco.
-
-**Parâmetros:** Nenhum
-
-**Retorno:** JSON com status, database_connected
-
-**Exemplo:**
-```
-db_health()
-```
-
----
-
-## Limites e Timeouts
-
-| Limite | Valor | Descrição |
-|--------|-------|-----------|
-| Query timeout | 5 min | Tempo máximo de execução |
-| Max rows | 10.000 | Máximo de linhas retornadas |
-| Pool connections | 25 | Máximo de conexões simultâneas |
-| Connect timeout | 10s | Timeout de conexão |
-
----
-
-## Tratamento de Erros
-
-Todas as tools retornam JSON com estrutura consistente:
-
-**Sucesso:**
-```json
-{
-  "success": true,
-  "data": [...],
-  ...
-}
-```
-
-**Erro:**
-```json
-{
-  "success": false,
-  "error": "Mensagem de erro"
-}
-```
+Os limites (timeout de query, teto de linhas, pool de conexões e timeout de conexão) são os campos de `src/config.py::Settings`. O timeout de query fica abaixo do `--timeout` do Cloud Run no `cloudbuild.yaml`, para a query morrer junto com o request que a pediu.

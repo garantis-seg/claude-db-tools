@@ -1,150 +1,29 @@
-# Setup do claude-db-tools
+# Setup do claude-db-tools no Claude Code
 
-Guia completo para configurar o MCP Server no Claude Code.
+Como ligar o servidor MCP no Claude Code. A REST não precisa de setup além do `gcloud` logado: veja o [README](../README.md). As tools que o MCP expõe estão na [referência das operações](TOOLS_REFERENCE.md).
 
----
+## Servidor remoto (Cloud Run)
 
-## URLs do Servico
-
-| Ambiente | URL |
-|----------|-----|
-| Cloud Run | `https://claude-db-tools-34pal47ocq-rj.a.run.app` |
-| Health Check | `https://claude-db-tools-34pal47ocq-rj.a.run.app/health` |
-| SSE Endpoint | `https://claude-db-tools-34pal47ocq-rj.a.run.app/sse` |
-
----
-
-## Opcao 1: Usar o Servidor Remoto (Recomendado)
-
-O servidor ja esta deployado no Cloud Run e conectado ao banco de dados.
-
-### Para Windows
-
-```powershell
-# Adicionar ao Claude Code
-claude mcp add claude-db-tools --transport sse https://claude-db-tools-34pal47ocq-rj.a.run.app/sse
-```
-
-### Verificar Instalacao
+O serviço é privado (`--no-allow-unauthenticated` no `cloudbuild.yaml`), então o MCP remoto leva o identity token no header:
 
 ```bash
-# Listar servidores MCP
-claude mcp list
-
-# Ou via comando /mcp dentro do Claude Code
-/mcp
+claude mcp add --transport sse claude-db-tools https://claude-db-tools-34pal47ocq-rj.a.run.app/sse \
+  --header "Authorization: Bearer $(gcloud auth print-identity-token)"
 ```
 
----
+⚠️ O identity token vence em cerca de uma hora, e o header gravado não se renova: quando ele vencer, remova o servidor (`claude mcp remove claude-db-tools`) e adicione de novo. Por isso o caminho do dia a dia é a REST, com um token novo a cada chamada.
 
-## Opcao 2: Rodar Localmente (Desenvolvimento)
+Para conferir: `claude mcp list`, ou `/mcp` dentro do Claude Code.
 
-Se precisar rodar o servidor localmente (requer acesso a VPC do GCP):
+## Servidor local (stdio)
 
-### Passo 1: Instalar Dependencias
+Só funciona de dentro da VPC do GCP (VPN ou Cloud Shell), porque o banco tem IP privado. As variáveis de conexão são os campos de `src/config.py::Settings` (modelo em `.env.example`); a senha é o secret que o `--set-secrets` do `cloudbuild.yaml` monta como `DB_PASSWORD`.
 
 ```bash
-cd c:\Users\Eltonxp\dev\Garantis\claude-db-tools
 pip install -r requirements.txt
+claude mcp add claude-db-tools --transport stdio \
+  --env PYTHONPATH=<raiz deste repo> --env DB_PASSWORD=<senha> \
+  -- python -m src.server
 ```
 
-### Passo 2: Configurar Credenciais
-
-Criar arquivo `.env`:
-```
-DB_HOST=172.17.0.5
-DB_PORT=5432
-DB_NAME=cnpj_database
-DB_USER=postgres
-DB_PASSWORD=<senha_do_secret_manager>
-```
-
-### Passo 3: Adicionar ao Claude Code
-
-```bash
-claude mcp add claude-db-tools \
-  --transport stdio \
-  --scope user \
-  --env DB_HOST=172.17.0.5 \
-  --env DB_NAME=cnpj_database \
-  --env DB_USER=postgres \
-  --env DB_PASSWORD=<senha> \
-  -- python c:\Users\Eltonxp\dev\Garantis\claude-db-tools\src\server.py
-```
-
-**Nota:** A conexao local so funciona se voce estiver dentro da VPC do GCP (via VPN ou Cloud Shell).
-
----
-
-## Testar o Servidor
-
-### Via Health Check
-
-```bash
-curl -s "https://claude-db-tools-34pal47ocq-rj.a.run.app/health" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)"
-```
-
-Resposta esperada:
-```json
-{"status":"healthy","database":"connected","version":"1.0.0"}
-```
-
-### Via Claude Code
-
-Abra uma conversa com o Claude e peca:
-
-```
-Liste as tabelas do schema cnpj_raw
-```
-
-O Claude deve usar a tool `db_list_tables` automaticamente.
-
----
-
-## Troubleshooting
-
-### Erro: "Connection refused" no servidor remoto
-
-Verifique se o token de identidade esta valido:
-```bash
-gcloud auth print-identity-token
-```
-
-### Erro: "DB_PASSWORD environment variable is required"
-
-A senha do banco nao foi configurada. Isso so acontece no modo local.
-
-### Servidor nao aparece no `/mcp`
-
-Remova e adicione novamente:
-```bash
-claude mcp remove claude-db-tools
-claude mcp add claude-db-tools --transport sse https://claude-db-tools-34pal47ocq-rj.a.run.app/sse
-```
-
----
-
-## Seguranca
-
-- O servidor requer autenticacao via token GCP
-- Conexoes usam pool com limite de 25 conexoes
-- Queries tem timeout de 5 minutos
-- Maximo de 10.000 rows por query
-
----
-
-## Tools Disponiveis
-
-| Tool | Descricao |
-|------|-----------|
-| `db_query` | Executa SELECT queries |
-| `db_execute` | Executa INSERT/UPDATE/DELETE |
-| `db_count` | Conta rows em uma tabela |
-| `db_list_tables` | Lista tabelas de um schema |
-| `db_get_schema` | Mostra schema de uma tabela |
-| `db_get_indexes` | Lista indices |
-| `db_get_stats` | Estatisticas de tabela |
-| `db_explain` | EXPLAIN ANALYZE de queries |
-| `db_get_sample` | Amostra de rows |
-| `db_health` | Verifica conexao com o banco |
+O servidor roda como módulo (`python -m src.server`), porque o `src/server.py` usa import relativo e não sobe como script. Sem `DB_PASSWORD`, ele para com `DB_PASSWORD environment variable is required`.
