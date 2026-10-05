@@ -118,14 +118,15 @@ Sem parâmetros. Devolve `status` (`healthy` ou `unhealthy`), `database` (`conne
 ### `POST /api/execute`
 
 - `sql` (obrigatório): começa por um dos verbos de `allowed_operations` em `src/tools/query.py::execute` (DML, DDL, `DO` e a manutenção `VACUUM`, `ANALYZE` e `REINDEX`).
-- `allow_mojibake` (opcional, default `false`): libera SQL com a assinatura de mojibake, só para reparo de dado. Não libera a guarda de tabelas-espinha.
+- `allow_mojibake` (opcional, default `false`): libera SQL com a assinatura de mojibake, só para reparo de dado. Não libera a guarda de tabelas-espinha nem a de manutenção.
 
 **Retorno:** `success`, `rows_affected`, `execution_time_ms`, `message`.
 
 - ⛔ SQL com a assinatura de mojibake (texto UTF-8 relido como CP1252 no cliente) é recusado (`mojibake_guard: true`): componha o não-ASCII com `chr(NNN)`, ou mande o SQL por um cliente com UTF-8 explícito.
 - ⛔ `DELETE`, `TRUNCATE` e `DROP` sobre tabela-espinha são recusados (`espinha_guard: true`).
 - `VACUUM` e todo comando com `CONCURRENTLY` rodam em autocommit; o resto roda numa transação, desfeita se der erro.
-- ⚠️ `VACUUM FULL` e `REINDEX` sem `CONCURRENTLY` bloqueiam a tabela enquanto rodam: em tabela quente, vão por migration.
+- ⛔ `VACUUM FULL`, `REINDEX` sem `CONCURRENTLY` e `CLUSTER` são recusados antes de executar, em qualquer statement do corpo (`manutencao_guard: true`, com o `comando` recusado): não perdem linha, mas seguram a tabela pela duração inteira, e praticamente nenhuma query passa enquanto rodam. A recusa aponta a forma que não trava (`VACUUM` sem `FULL`, `REINDEX INDEX CONCURRENTLY <índice>`) ou uma migration do frontend-api, que o deploy aplica pelo `run-migration-internal` (passo a passo na skill `deploy-e-migrations-fe-api`). Não há flag que a pule.
+- ⚠️ O `CONCURRENTLY` só libera na posição canônica, logo depois de `INDEX`, `TABLE`, `SCHEMA` ou `DATABASE`. Na lista de opções (`REINDEX (CONCURRENTLY) TABLE …`) ele aceita valor, e por isso é recusado. O corpo de um `DO $$…$$` fica opaco, como na guarda de espinha.
 
 ```
 {"sql": "INSERT INTO zz_tmp_scratch (col1) VALUES ('valor')"}

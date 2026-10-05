@@ -196,8 +196,11 @@ async def test_select_continua_recusado_pelo_allowlist(espiao):
 
 @pytest.mark.asyncio
 async def test_manutencao_na_espinha_continua_liberada(espiao):
-    """VACUUM/ANALYZE/REINDEX entraram em 2026-08-15 e nao perdem linha."""
-    for sql in ("VACUUM (FULL, ANALYZE) leads.meritos", "REINDEX TABLE leads.meritos"):
+    """Manutencao nao perde linha, entao a guarda de espinha nao a recusa.
+
+    (A que TRAVA a tabela cai noutra guarda — `test_guarda_manutencao.py`.)
+    """
+    for sql in ("VACUUM (ANALYZE) leads.meritos", "REINDEX TABLE CONCURRENTLY leads.meritos"):
         assert (await _run(sql))["success"] is True, sql
 
 
