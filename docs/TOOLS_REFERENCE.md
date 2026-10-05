@@ -1,32 +1,32 @@
-# Referência das operações
+# Referência das rotas
 
-Cada operação existe como tool MCP e como rota REST, com os mesmos parâmetros e os mesmos defaults. As duas portas são registradas em `src/server.py` (as tools com `@mcp.tool()`, as rotas em `run_http_server`), e a implementação mora em `src/tools/`.
+Cada operação é uma rota REST, registrada em `src/server.py` (`run_http_server`), e a implementação mora em `src/tools/`. A autenticação e os exemplos com `curl` estão no [README](../README.md).
 
-⛔ É ferramenta de desenvolvimento: nada de produção depende destas operações (ver o [README](../README.md)).
+⛔ É ferramenta de desenvolvimento: nada de produção depende destas rotas (ver o [README](../README.md)).
 
-| Tool MCP | Rota REST | O que faz |
-|---|---|---|
-| `db_query` | `POST /api/query` | SELECT |
-| `db_execute` | `POST /api/execute` | escrita: DML, DDL e manutenção |
-| `db_count` | `GET /api/count` | conta linhas |
-| `db_list_tables` | `GET /api/tables` | lista as tabelas de um schema |
-| `db_get_schema` | `GET /api/schema` | colunas de uma tabela |
-| `db_get_indexes` | `GET /api/indexes` | índices de uma tabela ou de um schema |
-| `db_get_stats` | `GET /api/stats` | estatísticas de uma tabela |
-| `db_explain` | `POST /api/explain` | plano de execução |
-| `db_get_sample` | `GET /api/sample` | amostra de linhas |
-| `db_health` | `GET /health` | conexão com o banco (a rota REST responde em outro formato) |
+| Rota | O que faz |
+|---|---|
+| `POST /api/query` | SELECT |
+| `POST /api/execute` | escrita: DML, DDL e manutenção |
+| `GET /api/count` | conta linhas |
+| `GET /api/tables` | lista as tabelas de um schema |
+| `GET /api/schema` | colunas de uma tabela |
+| `GET /api/indexes` | índices de uma tabela ou de um schema |
+| `GET /api/stats` | estatísticas de uma tabela |
+| `POST /api/explain` | plano de execução |
+| `GET /api/sample` | amostra de linhas |
+| `GET /health` (e `GET /`) | conexão com o banco |
 
-Na REST, os parâmetros vão no corpo JSON (POST) ou na query string (GET), com o nome que têm na tool.
+Os parâmetros vão no corpo JSON (POST) ou na query string (GET).
 
-- ⚠️ Passe sempre o `schema`: o default de várias operações é `public`, que está vazio de propósito.
-- ⛔ `DELETE`, `TRUNCATE` e `DROP` sobre tabela-espinha são recusados em `db_query`, `db_execute`, `db_count` e `db_explain` (`espinha_guard: true` na resposta), e a recusa diz o caminho certo: a migration. A lista, o porquê e os limites da guarda: [README](../README.md#guarda-de-tabelas-espinha).
+- ⚠️ Passe sempre o `schema`: o default de várias rotas é `public`, que está vazio de propósito.
+- ⛔ `DELETE`, `TRUNCATE` e `DROP` sobre tabela-espinha são recusados em `/api/query`, `/api/execute`, `/api/count` e `/api/explain` (`espinha_guard: true` na resposta), e a recusa diz o caminho certo: a migration. A lista, o porquê e os limites da guarda: [README](../README.md#guarda-de-tabelas-espinha).
 
 ---
 
 ## Leitura
 
-### db_query — `POST /api/query`
+### `POST /api/query`
 
 Executa um SELECT.
 
@@ -35,26 +35,29 @@ Executa um SELECT.
 
 **Retorno:** `success`, `rows`, `columns`, `data`, `execution_time_ms`.
 
-⚠️ **A resposta corta em silêncio.** Sem `LIMIT` no texto, a tool acrescenta `LIMIT <limit>`; com ou sem ele, a leitura para no teto `max_rows`. Nenhum campo avisa que cortou: para contar, agregue no servidor (`count(*)`), e ao paginar confira o total contra um `count(*)` na mesma rodada.
+⚠️ **A resposta corta em silêncio.** Sem `LIMIT` no texto, a rota acrescenta `LIMIT <limit>`; com ou sem ele, a leitura para no teto `max_rows`. Nenhum campo avisa que cortou: para contar, agregue no servidor (`count(*)`), e ao paginar confira o total contra um `count(*)` na mesma rodada.
 
-```
-db_query("SELECT cnpj_basico, razao_social FROM cnpj_raw.empresas WHERE razao_social ILIKE '%petrobras%'")
+```json
+{"sql": "SELECT cnpj_basico, razao_social FROM cnpj_raw.empresas WHERE razao_social ILIKE '%petrobras%'"}
 ```
 
-### db_count — `GET /api/count`
+### `GET /api/count`
 
 - `table` (obrigatório): `schema.tabela`.
-- `where` (opcional): a cláusula sem a palavra `WHERE`, concatenada crua no SQL.
+- `where` (opcional): a cláusula sem a palavra `WHERE`, concatenada crua no SQL. Vai na query string, então precisa de URL-encoding (no `curl`, `-G` com `--data-urlencode`).
 
 **Retorno:** `success`, `table`, `count`, `where`, `execution_time_ms`.
 
-É um `COUNT(*)` exato: em tabela grande pode estourar o timeout. A estimativa barata é o `estimated_rows` do `db_list_tables`.
+É um `COUNT(*)` exato: em tabela grande pode estourar o timeout. A estimativa barata é o `estimated_rows` do `GET /api/tables`.
 
-```
-db_count("cnpj_raw.estabelecimentos", "situacao_cadastral = '02'")
+```bash
+curl -s -G "https://claude-db-tools-34pal47ocq-rj.a.run.app/api/count" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  --data-urlencode "table=cnpj_raw.estabelecimentos" \
+  --data-urlencode "where=situacao_cadastral = '02'"
 ```
 
-### db_list_tables — `GET /api/tables`
+### `GET /api/tables`
 
 - `schema` (opcional, default `public`).
 
@@ -62,7 +65,7 @@ db_count("cnpj_raw.estabelecimentos", "situacao_cadastral = '02'")
 
 O `estimated_rows` vem do `pg_class.reltuples`, que sobrevive a um restart do cluster e vale até o último analyze (`estimated_rows_as_of`). O `live_tup_since_stats_reset` é contador do coletor de estatísticas e zera quando o cluster perde as estatísticas (num crash, por exemplo): ⛔ não o use para provar que uma tabela está vazia.
 
-### db_get_schema — `GET /api/schema`
+### `GET /api/schema`
 
 - `table` (obrigatório): o nome sem o schema.
 - `schema` (opcional, default `public`).
@@ -71,14 +74,14 @@ O `estimated_rows` vem do `pg_class.reltuples`, que sobrevive a um restart do cl
 
 O `row_count` é um `COUNT(*)` exato: em tabela grande, a chamada pode estourar o timeout.
 
-### db_get_indexes — `GET /api/indexes`
+### `GET /api/indexes`
 
 - `table` (opcional): filtra por tabela.
 - `schema` (opcional, default `cnpj_raw`).
 
 **Retorno:** `success`, `schema`, `table`, `total_indexes` e, por índice, `table_name`, `index_name`, `size`, `index_type` e `definition`.
 
-### db_get_stats — `GET /api/stats`
+### `GET /api/stats`
 
 - `table` (obrigatório): o nome sem o schema.
 - `schema` (opcional, default `cnpj_raw`).
@@ -87,16 +90,16 @@ O `row_count` é um `COUNT(*)` exato: em tabela grande, a chamada pode estourar 
 
 `estimated_live_rows`, `dead_rows` e `modifications_since_analyze` são contadores do coletor de estatísticas: zeram quando o cluster perde as estatísticas.
 
-### db_explain — `POST /api/explain`
+### `POST /api/explain`
 
 - `sql` (obrigatório).
 - `analyze` (opcional, default `true`).
 
 **Retorno:** `success`, `analyzed`, `query`, `plan` (as linhas do plano) e `timing` (`planning_time_ms`, `execution_time_ms`, `total_time_ms`).
 
-⚠️ Com `analyze` (o default), o Postgres **executa** o comando, DML inclusive. Nada é commitado, mas efeito não transacional (sequência, advisory lock) fica. Para ver só o plano, `analyze=false`.
+⚠️ Com `analyze` (o default), o Postgres **executa** o comando, DML inclusive. Nada é commitado, mas efeito não transacional (sequência, advisory lock) fica. Para ver só o plano, `"analyze": false`.
 
-### db_get_sample — `GET /api/sample`
+### `GET /api/sample`
 
 - `table` (obrigatório): o nome sem o schema.
 - `schema` (opcional, default `public`).
@@ -104,15 +107,15 @@ O `row_count` é um `COUNT(*)` exato: em tabela grande, a chamada pode estourar 
 
 **Retorno:** `success`, `full_name`, `rows_returned`, `columns`, `data`.
 
-### db_health — `GET /health`
+### `GET /health` (e `GET /`)
 
-Sem parâmetros. A tool devolve `success`, `status` e `database_connected`; a rota REST, `status`, `database` e `version`.
+Sem parâmetros. Devolve `status` (`healthy` ou `unhealthy`), `database` (`connected` ou `disconnected`) e `version`.
 
 ---
 
 ## Escrita
 
-### db_execute — `POST /api/execute`
+### `POST /api/execute`
 
 - `sql` (obrigatório): começa por um dos verbos de `allowed_operations` em `src/tools/query.py::execute` (DML, DDL, `DO` e a manutenção `VACUUM`, `ANALYZE` e `REINDEX`).
 - `allow_mojibake` (opcional, default `false`): libera SQL com a assinatura de mojibake, só para reparo de dado. Não libera a guarda de tabelas-espinha.
@@ -125,16 +128,16 @@ Sem parâmetros. A tool devolve `success`, `status` e `database_connected`; a ro
 - ⚠️ `VACUUM FULL` e `REINDEX` sem `CONCURRENTLY` bloqueiam a tabela enquanto rodam: em tabela quente, vão por migration.
 
 ```
-db_execute("INSERT INTO zz_tmp_scratch (col1) VALUES ('valor')")
-db_execute("CREATE INDEX CONCURRENTLY idx_nome ON schema.tabela (coluna)")
-db_execute("VACUUM (ANALYZE) leads.meritos")
+{"sql": "INSERT INTO zz_tmp_scratch (col1) VALUES ('valor')"}
+{"sql": "CREATE INDEX CONCURRENTLY idx_nome ON schema.tabela (coluna)"}
+{"sql": "VACUUM (ANALYZE) leads.meritos"}
 ```
 
 ---
 
 ## Erros
 
-Toda resposta das operações traz `success` e, na falha, `error` com a mensagem. A REST responde 400, só com `error`, quando falta parâmetro obrigatório.
+A resposta das rotas `/api/...` traz `success` e, na falha, `error` com a mensagem. Falta de parâmetro obrigatório responde 400, só com `error`; rota ou método que não existe responde 404 (`{"error": "Not found"}`).
 
 ## Limites
 

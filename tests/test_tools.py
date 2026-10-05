@@ -1,5 +1,5 @@
 """
-Tests for MCP tools
+Tests for the database tools in src/tools
 
 Note: These tests require a database connection.
 Set environment variables before running:

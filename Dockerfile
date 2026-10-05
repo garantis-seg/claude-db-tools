@@ -1,4 +1,4 @@
-# claude-db-tools MCP Server
+# claude-db-tools REST API
 # Multi-stage build for smaller image
 
 # Build stage
@@ -48,11 +48,10 @@ ENV DB_HOST=172.17.0.5 \
     DB_NAME=cnpj_database \
     DB_USER=postgres \
     MAX_ROWS=10000 \
-    MCP_TRANSPORT=http \
     PORT=8080
 
 # Expose port for Cloud Run
 EXPOSE 8080
 
-# Run the MCP server with HTTP transport
+# Run the REST API server
 CMD ["python", "-m", "src.server"]

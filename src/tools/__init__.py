@@ -1,5 +1,5 @@
 """
-MCP Tools for PostgreSQL database operations
+Tools for PostgreSQL database operations (served by the REST routes in src/server.py)
 """
 from .query import query, execute, count
 from .schema import list_tables, get_schema, get_indexes
