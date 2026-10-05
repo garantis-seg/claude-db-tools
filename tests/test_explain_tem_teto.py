@@ -2,7 +2,7 @@
 
 O DEFEITO (card 869eypyq3): `explain_query` era o UNICO caminho do servico que
 pegava `get_connection()` cru e nunca mandava `SET statement_timeout`. E
-`analyze=True` e o default nas duas portas (`src/server.py:184` e `:425`), entao
+`analyze=True` e o default da rota (`handle_api_explain` em `src/server.py`), entao
 `EXPLAIN (ANALYZE, ...)` EXECUTA a query de verdade — sem teto.
 
 ⚠️ A EVIDENCIA DO CARD MEDIA A COISA ERRADA, e refazer a medicao dele fecha o

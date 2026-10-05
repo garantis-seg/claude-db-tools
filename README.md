@@ -1,6 +1,6 @@
 # claude-db-tools
 
-Serviço de acesso ao PostgreSQL do Cloud SQL (projeto `neqsti`) para AI Agents (Claude, GPT etc.): uma API REST e um servidor MCP sobre as mesmas operações.
+Serviço de acesso ao PostgreSQL do Cloud SQL (projeto `neqsti`) para AI Agents (Claude, GPT etc.), por uma API REST.
 
 ---
 
@@ -10,7 +10,7 @@ Serviço de acesso ao PostgreSQL do Cloud SQL (projeto `neqsti`) para AI Agents 
 
 Base URL: `https://claude-db-tools-34pal47ocq-rj.a.run.app`
 
-As operações (a tool MCP e a rota REST de cada uma, com parâmetros, retorno e armadilhas) estão em [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md). O setup do MCP no Claude Code está em [docs/SETUP.md](docs/SETUP.md).
+As rotas (parâmetros, retorno e armadilhas de cada uma) estão em [docs/TOOLS_REFERENCE.md](docs/TOOLS_REFERENCE.md).
 
 ### Autenticação (IMPORTANTE)
 
@@ -19,6 +19,8 @@ O serviço é privado: toda requisição, `/health` inclusive, leva um Google Cl
 ```bash
 curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" URL
 ```
+
+O identity token vence em cerca de uma hora: gere um a cada chamada, como nos exemplos abaixo.
 
 **Pré-requisito:** o usuário precisa estar logado no gcloud CLI.
 
@@ -129,7 +131,7 @@ A guarda também recusa trabalho legítimo, e isso é o mecanismo, não efeito c
 
 ## Código
 
-`src/server.py` registra as tools MCP e as rotas REST; `src/tools/` tem a implementação; `src/config.py`, a conexão e os limites.
+`src/server.py` registra as rotas REST; `src/tools/` tem a implementação; `src/config.py`, a conexão e os limites.
 
 ---
 
@@ -149,9 +151,11 @@ O build roda os testes antes de publicar (step `gate-testes` do `cloudbuild.yaml
 # Instalar dependências
 pip install -r requirements.txt
 
-# Rodar servidor localmente (requer Cloud SQL Auth Proxy)
-MCP_TRANSPORT=http python -m src.server
+# Rodar servidor localmente (porta 8080)
+python -m src.server
 ```
+
+A conexão vem dos campos de `src/config.py::Settings` (modelo em `.env.example`): de dentro da VPC do GCP (VPN ou Cloud Shell), o IP privado do banco; de fora dela, o Cloud SQL Auth Proxy. A senha é o secret que o `--set-secrets` do `cloudbuild.yaml` monta como `DB_PASSWORD`; sem ela, o servidor para com `DB_PASSWORD environment variable is required`. O servidor roda como módulo (`python -m src.server`) porque o `src/server.py` usa import relativo e não sobe como script.
 
 ---
 
