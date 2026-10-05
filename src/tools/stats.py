@@ -8,7 +8,7 @@ import time
 from typing import Optional
 
 from ..database import execute_query
-from .query import recusa_espinha
+from .query import recusa_espinha, recusa_manutencao
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ async def explain_query(sql: str, analyze: bool = True) -> str:
         # DELETE FROM leads.meritos` apagava pela rota que todo mundo assume ser
         # de leitura. Modo de falha perverso: e o comando que a pessoa digita
         # JUSTAMENTE por acreditar que nao apaga.
-        recusa = recusa_espinha(sql, "/api/explain")
+        recusa = recusa_espinha(sql, "/api/explain") or recusa_manutencao(sql, "/api/explain")
         if recusa:
             return recusa
 

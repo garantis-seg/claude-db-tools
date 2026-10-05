@@ -224,6 +224,76 @@ async def test_literal_aberto_sem_manutencao_que_trava_nao_e_recusado(espiao):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sql,comando", [
+    ("REINDEX (CONCURRENTLY) TABLE leads.processos", "REINDEX"),
+    ("REINDEX (CONCURRENTLY true) TABLE leads.processos", "REINDEX"),
+    ("REINDEX (VERBOSE, CONCURRENTLY) TABLE leads.processos", "REINDEX"),
+    ("VACUUM (FULL 'off') leads.processos", "VACUUM FULL"),
+])
+async def test_forma_de_opcao_que_nao_trava_e_recusada_de_proposito(sql, comando, espiao):
+    """Estas NAO travam, e a guarda as recusa assim mesmo: na lista de opcoes o
+    valor decide, e o valor citado chega mascarado. Recusa a mais, nunca lock a
+    mais; a mensagem aponta a forma canonica. Mudar isto e decisao, nao conserto."""
+    out = await _run(sql)
+    assert out.get("manutencao_guard") is True
+    assert out["comando"] == comando
+    assert not espiao
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sql,comando", [
+    ("DO $$ BEGIN REINDEX TABLE leads.processos; END $$", "REINDEX"),
+    ("DO $m$ BEGIN CLUSTER leads.processos USING ix; END $m$", "CLUSTER"),
+    ("INSERT INTO zz (t) VALUES (1); DO $$ BEGIN REINDEX INDEX leads.ix_a; END $$", "REINDEX"),
+    ("CREATE FUNCTION zz_f() RETURNS void AS $$ CLUSTER zz_t $$ LANGUAGE sql", "CLUSTER"),
+])
+async def test_manutencao_dentro_de_bloco_passa_mas_fica_no_log(sql, comando, espiao, caplog):
+    """⚠️ Buraco CONHECIDO, o mesmo da espinha: o corpo do `$tag$` e opaco pra
+    decidir, e e isso que mantem o truque de medicao. Mas REINDEX e CLUSTER rodam
+    dentro de plpgsql e travam ate o fim, entao o desvio tem de aparecer no log."""
+    with caplog.at_level(logging.WARNING, logger=qmod.__name__):
+        out = await _run(sql)
+    assert out["success"] is True, "o bloco deixou de passar — a medicao quebrou junto"
+    linha = "\n".join(r.getMessage() for r in caplog.records)
+    assert "manutencao_guard: BURACO CONHECIDO" in linha
+    assert comando in linha
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sql", [
+    "DO $$ BEGIN DELETE FROM zz_t WHERE id = 1; RAISE EXCEPTION 'MEDIDA'; END $$",
+    "DO $$ BEGIN UPDATE zz_t SET cluster = 'a' WHERE id = 1; END $$",
+    "DO $$ BEGIN VACUUM zz_t; END $$",
+])
+async def test_bloco_sem_manutencao_que_trava_nao_loga_o_buraco(sql, espiao, caplog):
+    """Controle negativo do log: coluna `cluster` e VACUUM sem FULL nao sao o desvio."""
+    with caplog.at_level(logging.WARNING, logger=qmod.__name__):
+        await _run(sql)
+    assert "manutencao_guard" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rota", ["/api/query", "/api/count", "/api/explain"])
+async def test_as_outras_portas_tambem_recusam(rota, monkeypatch):
+    """Como a espinha: as 4 rotas mandam texto pro cursor, nenhuma e read-only, e
+    `SELECT 1; REINDEX TABLE t` seguraria o lock pela reconstrucao inteira."""
+    smod = import_module("src.tools.stats")
+    vistos = []
+    for mod in (qmod, smod):
+        monkeypatch.setattr(mod, "execute_query", lambda sql, *a, **k: vistos.append(sql) or [])
+    if rota == "/api/query":
+        out = await qmod.query("SELECT 1 LIMIT 1; REINDEX TABLE leads.processos")
+    elif rota == "/api/count":
+        out = await qmod.count("zz_t", where="1=1; CLUSTER leads.processos")
+    else:
+        out = await smod.explain_query("SELECT 1; VACUUM FULL leads.processos")
+    out = json.loads(out)
+    assert out.get("manutencao_guard") is True
+    assert out["rota"] == rota
+    assert not vistos, "o SQL chegou no cursor"
+
+
+@pytest.mark.asyncio
 async def test_reindex_concurrently_roda_em_autocommit(espiao):
     """O REINDEX que sobra e o CONCURRENTLY, e o PG o proibe em bloco de transacao.
 

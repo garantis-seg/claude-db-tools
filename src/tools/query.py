@@ -418,7 +418,8 @@ def espinha_error(verbo: str, alvo: str) -> str:
 #
 # ⛔ Sem flag de bypass, como a espinha: quem precisa travar escreve a migration.
 # ⚠️ Fora do alcance, de proposito: o corpo de `DO`/funcao em `$$...$$` (opaco
-# pelo mesmo motivo da espinha — e o que mantem vivo o truque de medicao) e a DDL que
+# pelo mesmo motivo da espinha — e o que mantem vivo o truque de medicao; como la,
+# o `execute` so LOGA o `BURACO CONHECIDO`) e a DDL que
 # reescreve tabela (ALTER TABLE ... SET TABLESPACE / ALTER COLUMN TYPE). Esta
 # guarda e de MANUTENCAO; se a DDL entrar, e a lista de comandos que cresce.
 # ---------------------------------------------------------------------------
@@ -426,8 +427,10 @@ def espinha_error(verbo: str, alvo: str) -> str:
 #: (`VACUUM [FULL] [FREEZE] [VERBOSE] [ANALYZE] ...`).
 _VACUUM_FULL = re.compile(r"^\s*VACUUM\s+FULL\b", re.I)
 #: Com parenteses, FULL e opcao em qualquer posicao da lista e aceita valor:
-#: `(FULL)` e `(ANALYZE, FULL true)` ligam, `FULL false|off|0` desliga. O nome
-#: citado (`"full"`) tambem liga — o PG o le como identificador.
+#: `(FULL)` e `(ANALYZE, FULL true)` ligam, `FULL false|off|0` SEM aspas desliga.
+#: Com aspas (`FULL 'off'`) o valor chega mascarado e a guarda recusa: direcao
+#: segura, e a mensagem aponta o VACUUM sem FULL. O nome citado (`"full"`) liga —
+#: o PG o le como identificador.
 _VACUUM_OPCOES = re.compile(r"^\s*VACUUM\s*\(([^)]*)\)", re.I)
 _FULL_LIGADO = re.compile(r'(?:^|,)\s*"?FULL\b"?(?!\s*(?:FALSE|OFF|0)\b)', re.I)
 _REINDEX = re.compile(r"^\s*REINDEX\b", re.I)
@@ -435,7 +438,9 @@ _REINDEX = re.compile(r"^\s*REINDEX\b", re.I)
 #: ⛔ So a posicao canonica libera. Na lista de opcoes o CONCURRENTLY aceita valor
 #: (`(CONCURRENTLY false)`, `(CONCURRENTLY 'off')` — e a string chega aqui ja
 #: mascarada), entao achar a palavra em qualquer posicao liberava o REINDEX que
-#: trava. `(CONCURRENTLY)` sem valor cai junto; a mensagem aponta a forma canonica.
+#: trava. A forma de opcao inteira cai junto, inclusive a que nao trava
+#: (`(CONCURRENTLY)`, `(CONCURRENTLY true)`): recusa a mais, nunca lock a mais, e
+#: a mensagem aponta a forma canonica.
 _REINDEX_CONCORRENTE = re.compile(
     r"^\s*REINDEX\s*(?:\([^)]*\)\s*)?(?:INDEX|TABLE|SCHEMA|DATABASE|SYSTEM)\s+CONCURRENTLY\b",
     re.I,
@@ -457,16 +462,27 @@ def _trava(statement: str):
     return None
 
 
-def _manutencao_que_trava(sql: str):
+def _manutencao_que_trava(sql: str, dentro_do_bloco: bool = False):
     """O 1o comando de manutencao que trava, em QUALQUER statement do corpo, ou None.
 
     Olha cada statement, nao so o lider: em `ANALYZE t; VACUUM FULL t` o lider e
     liberado. O texto e o de `_mascara`, entao comentario e string literal nao
     escondem nem inventam comando: `/* x */ VACUUM FULL t` trava, `REINDEX TABLE t
     /* CONCURRENTLY */` tambem, e `INSERT ... VALUES ('VACUUM FULL')` nao.
+
+    `dentro_do_bloco=True` deixa o corpo do `$tag$` visivel e so serve ao log do
+    buraco conhecido (⛔ nunca pra DECIDIR, como na espinha). La dentro o comando
+    nao abre o statement, entao ele tambem e cortado no `$tag$` e depois de
+    BEGIN/THEN/LOOP/ELSE.
+    ponytail: `EXECUTE 'CLUSTER t'` segue invisivel (a string e mascarada); o log
+    e visibilidade, nao guarda.
     """
-    mascarado, aberto = _mascara(sql)
-    for statement in mascarado.split(";"):
+    mascarado, aberto = _mascara(sql, dollar=not dentro_do_bloco)
+    statements = mascarado.split(";")
+    if dentro_do_bloco:
+        statements = [p for s in statements
+                      for p in re.split(r"\$\w*\$|\b(?:BEGIN|THEN|LOOP|ELSE)\b", s, flags=re.I)]
+    for statement in statements:
         comando = _trava(statement)
         if comando:
             return comando
@@ -576,7 +592,7 @@ async def query(sql: str, limit: int = 1000) -> str:
     # O `_devolve_no_estado_em_que_saiu` do `database.py` fechou isso, entao o
     # rollback voltou a ser o que segura a rota. ⛔ Continua sem ser garantia:
     # efeito NAO-transacional (setval, pg_advisory_lock) o rollback nunca desfaz.
-    recusa = recusa_espinha(sql, "/api/query")
+    recusa = recusa_espinha(sql, "/api/query") or recusa_manutencao(sql, "/api/query")
     if recusa:
         return recusa
 
@@ -699,6 +715,14 @@ async def execute(sql: str, allow_mojibake: bool = False) -> str:
             "(DO/FUNCTION); NAO recusado, ver query.py | sql=%r",
             oculto[0], oculto[1], sql[:4000],
         )
+    # O mesmo buraco vale pra guarda de manutencao: REINDEX e CLUSTER rodam dentro
+    # de plpgsql e seguram o lock pela reconstrucao inteira, mesmo com RAISE no fim.
+    oculto = _manutencao_que_trava(sql, dentro_do_bloco=True)
+    if oculto:
+        logger.warning(
+            "manutencao_guard: BURACO CONHECIDO — %s dentro de bloco $tag$ "
+            "(DO/FUNCTION); NAO recusado, ver query.py | sql=%r", oculto, sql[:4000],
+        )
 
     if not allow_mojibake and MOJIBAKE_SIG.search(sql):
         logger.warning(f"Mojibake guard rejected statement: {sql[:120]!r}")
@@ -768,7 +792,7 @@ async def count(table: str, where: Optional[str] = None) -> str:
 
         # ⛔ `table` e `where` sao concatenados CRUS (e por GET). A guarda roda
         # sobre o SQL ja montado, que e o texto que chega no cursor.
-        recusa = recusa_espinha(sql, "/api/count")
+        recusa = recusa_espinha(sql, "/api/count") or recusa_manutencao(sql, "/api/count")
         if recusa:
             return recusa
 
