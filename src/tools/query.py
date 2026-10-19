@@ -599,9 +599,11 @@ async def query(sql: str, limit: int = 1000) -> str:
     # Enforce limit
     effective_limit = min(limit, settings.max_rows)
 
-    # Add LIMIT if not present
-    if "LIMIT" not in sql_upper:
-        sql = f"{sql.rstrip(';')} LIMIT {effective_limit}"
+    # Add LIMIT if not present. Palavra inteira: uma coluna `limite_*` nao e LIMIT.
+    # O `;` final pode vir seguido de espaco ou quebra de linha, e a quebra antes do
+    # LIMIT impede que um comentario `--` na ultima linha o engula.
+    if not re.search(r"\bLIMIT\b", sql_upper):
+        sql = f"{sql.rstrip().rstrip(';')}\nLIMIT {effective_limit}"
 
     try:
         logger.info(f"Executing query: {sql[:100]}...")
