@@ -123,7 +123,8 @@ steps:
       # O que se perde: um cold start (~segundos) na primeira query da sessao.
       # Economia: SKU `Services Min Instance CPU/Memory Tier 2` = 0,0000035 USD
       # por vCPU-s e por GiB-s em southamerica-east1, 1 vCPU + 512Mi
-      # => -13,61 USD/mes de PRECO DE TABELA (a fatura e inalcancavel aqui).
+      # => -13,61 USD/mes de PRECO DE TABELA (o custo faturado mora no export de
+      # billing no BigQuery, que o fe-api le).
       # ⛔ Se a lentidao no inicio da sessao incomodar, o certo e voltar pra 1, nao
       # inventar keep-alive: cron batendo no servico pra manter quente custa o
       # MESMO e ainda vira cron orfao quando alguem esquecer.
